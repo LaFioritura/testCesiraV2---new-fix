@@ -1,0 +1,27 @@
+CESIRA — INTERNAL UPGRADE NOTES
+
+Included in this package:
+1) Full event humanization
+- lane-aware timing offsets
+- accent micro-variation
+- tone/decay micro-variation
+
+2) Internal drum variation
+- 2-bar accent movement
+- 4-bar extra hat/snare/kick events
+- 8-bar mini-fill behavior and more open hats near phrase ends
+
+3) Alternate hits / drum intelligence
+- hat tonal alternation and Q variation
+- snare ghost hits and alternate transient behavior
+- kick variant bias on phrase anchors/fill points
+
+4) Invisible FX
+- subtle master glue refinement
+- kick-triggered ducking on bass/synth lane gains
+- more natural bus compression response
+
+Notes:
+- Visual UI intentionally preserved.
+- Package is Vercel-ready.
+- node_modules excluded.

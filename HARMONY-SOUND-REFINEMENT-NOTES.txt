@@ -1,0 +1,18 @@
+Cesira Harmony + Sound Refinement
+
+Implemented in this package:
+- harmonic target-tone bias by chord function (tonic / predominant / dominant / color)
+- passing-tone behavior for more believable phrase connections
+- stronger cadence handling near phrase endings
+- more deliberate bass anchoring on structural beats
+- refined snare with added snap layer
+- refined hats with extra air/high-shelf contour
+- bass filter movement and fuller envelope contour
+- synth sheen layer in lead-style engine for more presence and definition
+
+Package status:
+- clean source
+- no node_modules
+- npm install validated
+- npm run build validated
+- fresh dist included

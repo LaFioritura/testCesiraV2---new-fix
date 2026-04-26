@@ -1,0 +1,17 @@
+CESIRA — energy/shape/character upgrade
+
+Added in this package:
+- Global energy system driving density/accent behavior more coherently
+- Structured bar-shape evolution inside sections (not flat repetition)
+- Global sound character per composition/session (warm / dark / bright / dirty / tight)
+
+What changed internally:
+- generation now computes a macro energy value per section regeneration
+- each section gets a structured bar profile so 4/8-bar phrases have an internal arc
+- sound character biases filters, drive, motion, accents, and timbre behind the scenes
+- save/load now preserves soundCharacter and compositionEnergy (scene format v4, with v2/v3 compatibility)
+
+What stays the same:
+- visual layout
+- control surface and workflow
+- Vercel-ready structure

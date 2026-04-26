@@ -1,0 +1,21 @@
+CESIRA update: lane control + synth expression
+
+Added:
+- per-lane volume controls
+- per-lane probability controls
+- synth chord chance control
+- synth hold / sustain control
+- synth curve selector (balanced / soft / snappy / bloom / glass)
+- save/load/export/import support for the new controls
+
+Behavior:
+- lane volume now affects kick/snare/hat/bass/synth routing levels
+- bass/synth ducking now respects the current lane volume
+- lane probability acts as a global lane gate on top of step probability
+- synth generation can now create longer sustained notes and chord voicings
+- synth envelope behavior changes with the selected curve
+
+Packaging:
+- build validated with npm install + npm run build
+- no node_modules included
+- ready for Vercel

@@ -1,0 +1,22 @@
+CESIRA — COMPOSITION INTELLIGENCE UPGRADE
+
+This package keeps the visual identity intact while upgrading the internal composition engine.
+
+Main technical changes
+- New composition blueprint system with motif memory
+- Phrase/reply melodic generation for bass and synth
+- Section-aware energy shaping (intro/build/drop/break/fill/outro)
+- Recall and controlled mutation across section regenerations
+- Smarter rhythm evolution for bass and synth by section
+- Song arc start now creates a coherent composition plan
+- Save/export now includes harmonic progression
+- Rebuilt clean for Vercel after dependency install
+
+Validated
+- npm install
+- npm run build
+
+Vercel settings
+- Framework preset: Vite
+- Build command: npm run build
+- Output directory: dist

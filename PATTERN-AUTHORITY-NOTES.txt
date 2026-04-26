@@ -1,0 +1,25 @@
+PATTERN AUTHORITY UPDATE
+
+What was added
+- Pattern authority system with 3 modes: LOCK / ASSIST / EVOLVE
+- Compact authority buttons in the top context bar:
+  - d:l / d:a / d:e = drums lock/assist/evolve
+  - b:l / b:a / b:e = bass lock/assist/evolve
+  - s:l / s:a / s:e = synth lock/assist/evolve
+
+Behavior
+- Manual drum step edits automatically set DRUMS to LOCK
+- Manual bass note edits automatically set BASS to LOCK
+- Manual synth note edits automatically set SYNTH to LOCK
+- Regenerate section keeps locked lanes intact
+- Pattern mutations (mutate / thin / thicken) respect locked lanes
+- Randomize bass/synth notes refuses to overwrite locked bass/synth
+- Save/load/export/import now persist pattern authority (scene/project v5)
+
+Default
+- New sessions start in ASSIST for drums, bass, synth
+
+Limitations of this pass
+- LOCK is strong and reliable
+- ASSIST / EVOLVE are lane-level authority controls, but the deepest generative internals are still the original engine
+- This pass is designed to preserve user-written material without redesigning the app

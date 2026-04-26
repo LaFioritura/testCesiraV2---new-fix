@@ -1,0 +1,17 @@
+CESIRA — Hook / Memory / Families upgrade
+
+What was added:
+- Hook detection and reuse for bass and synth
+- Long-term memory across sections via lane hook banks and section history
+- Contextual fill modes based on musical transition feel
+- Stronger genre-family behavior that influences internal character and phrasing
+
+Internal behavior highlights:
+- Strong melodic fragments are detected and stored as reusable hooks
+- Drops/grooves/builds can recall hooks with section-aware weighting
+- Fill sections now adapt to context (lift, re-entry, break-rush, air-gap, impact)
+- Genre families now bias motion, accents, drive, spacing, bass role and synth role
+
+Technical validation:
+- npm install: OK
+- npm run build: OK

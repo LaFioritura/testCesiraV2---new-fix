@@ -1,0 +1,19 @@
+CESIRA Ultimate Expansion — technical update
+
+What was changed
+- Expanded bass preset library from 8 to 16 entries.
+- Expanded synth preset library from 10 to 16 entries.
+- Expanded drum preset library from 6 to 12 entries.
+- Expanded performance preset library from 6 to 12 entries.
+- Added richer preset-driven timbre parameters for bass and synth.
+- Reworked kick synthesis with layered body/punch/sub/click behavior.
+- Reworked snare synthesis with tonal body plus filtered noise.
+- Reworked hat synthesis with improved filtering and proper open-hat timing.
+- Fixed hi-hat stop timing precedence bug.
+- Added preset-controlled open-hat probability.
+- Updated scene/project serialization version from v2 to v3 while preserving v2 compatibility on load.
+
+Notes
+- Visual layout intentionally kept unchanged.
+- Existing dist folder was kept from the original package.
+- Source file updated: src/App.jsx

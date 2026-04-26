@@ -1,0 +1,24 @@
+CESIRA PRODUCT UPGRADE — VERCEL READY
+
+What was improved without changing the visual identity:
+- Fixed BPM sync bug during genre/session creation (state and engine now agree on one BPM value).
+- Added automatic local session persistence in browser storage.
+- Added automatic restore of the last session at app boot.
+- Persisted scene bank together with the last session.
+- Improved JSON import so it can restore either a project snapshot or a full saved session bundle.
+- Added panic reset on ESC to fully reset the audio engine if needed.
+- Prevented the app from overwriting the initial status with “Autopilot off” on first boot.
+- Improved recording memory handling by revoking dropped object URLs and cleaning them on teardown.
+- Kept the project Vite/Vercel compatible and rebuilt production dist.
+
+Deploy:
+1. Upload the folder to GitHub.
+2. Import the repo in Vercel.
+3. Framework preset: Vite.
+4. Build command: npm run build
+5. Output directory: dist
+
+Notes:
+- node_modules is intentionally not included.
+- local session restore works in the browser that created the session.
+- ESC closes and rebuilds the audio engine on next play/init.
