@@ -1,0 +1,44 @@
+CESIRA — MUSICAL INTELLIGENCE UPGRADE
+
+This pass focuses on musical quality, not UI changes.
+
+WHAT WAS IMPROVED
+
+1) NARRATIVE COMPOSITION
+- Added genre-aware narrative profiles so phrases behave differently by genre.
+- Added theme cells and response cells for bass and synth.
+- Melodic phrases now use statement / answer / climb / climax / cadence / release behavior.
+- Added stronger cadential logic and phrase-level rest shaping, so repetition is less flat.
+- Repeated sections now evolve with memory instead of only random mutation.
+
+2) REALER POLYPHONY
+- Synth voicings are now chosen from style banks: triad, open, seventh, add9, quartal, sus2, cluster, pedal.
+- Chords are voice-led against the previous voicing to reduce clumsy jumps.
+- Polyphonic depth is now influenced by genre narrative profile instead of always defaulting to the same 3-note block.
+- Manual poly mode remains intact.
+
+3) CLEANER / MORE COHERENT SOUND
+- Added extra high-pass cleanup on multiple synth branches to reduce low-mid mud.
+- Lowered bus headroom slightly to better absorb denser polyphonic sections.
+- Kept the existing aesthetic and control surface intact.
+
+4) MORE VARIETY IN TIMBRE / PRESETS
+- Added extra bass presets:
+  - CLUB ROOT
+  - CINEMA PEDAL
+  - VOID REESE
+- Added extra synth presets:
+  - THEATRE THEME
+  - OPALINE CHORDS
+  - NOIR BLOOM
+  - SUPER GLASS
+
+5) SESSION / STORAGE
+- Session storage key and payload version were bumped for the new musical architecture.
+- Existing app behavior remains the same from the user perspective, but older local autosaves may not auto-load into the new storage slot.
+
+DEPLOY
+- Framework: Vite
+- Build command: npm run build
+- Output directory: dist
+

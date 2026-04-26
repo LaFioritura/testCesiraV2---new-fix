@@ -6,8 +6,8 @@ import React,{useCallback,useEffect,useRef,useState}from'react';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MAX_STEPS=64,PAGE=16,SCHED=0.14,LOOK=20,UNDO=32,REDO=32;
-const SESSION_STORAGE_KEY='cesira-session-v6';
-const SESSION_PAYLOAD_VERSION=7;
+const SESSION_STORAGE_KEY='cesira-session-v7';
+const SESSION_PAYLOAD_VERSION=8;
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
 const rnd=()=>Math.random();
 const pick=a=>a[Math.floor(rnd()*a.length)];
@@ -34,6 +34,46 @@ const GENRE_FAMILY_PROFILES={
   cinematic:{drive:-0.03,tone:0.1,space:0.12,motion:0.04,accent:0.01,hookBias:0.56,fillBias:'swell',bassRole:'pedal',synthRole:'theme'},
 };
 const getGenreFamilyProfile=genre=>GENRE_FAMILY_PROFILES[genre]||GENRE_FAMILY_PROFILES.techno;
+
+
+const GENRE_NARRATIVE_PROFILES={
+  techno:{restBias:0.08,answerShift:-1,climbLift:1,chordPalette:['open','sus2','quartal'],cadenceBias:0.72,registerLift:0,polyDepth:3,ornamentBias:0.18},
+  house:{restBias:0.12,answerShift:1,chordPalette:['seventh','add9','open'],cadenceBias:0.66,registerLift:1,polyDepth:4,ornamentBias:0.14},
+  ambient:{restBias:0.32,answerShift:0,chordPalette:['open','add9','quartal'],cadenceBias:0.48,registerLift:2,polyDepth:4,ornamentBias:0.08},
+  dnb:{restBias:0.1,answerShift:-2,chordPalette:['sus2','triad','cluster'],cadenceBias:0.74,registerLift:1,polyDepth:3,ornamentBias:0.24},
+  acid:{restBias:0.1,answerShift:1,chordPalette:['sus2','cluster','triad'],cadenceBias:0.58,registerLift:1,polyDepth:3,ornamentBias:0.3},
+  industrial:{restBias:0.14,answerShift:-1,chordPalette:['quartal','cluster','open'],cadenceBias:0.62,registerLift:0,polyDepth:3,ornamentBias:0.22},
+  experimental:{restBias:0.22,answerShift:2,chordPalette:['quartal','add9','cluster'],cadenceBias:0.52,registerLift:1,polyDepth:4,ornamentBias:0.34},
+  cinematic:{restBias:0.18,answerShift:1,chordPalette:['add9','seventh','open'],cadenceBias:0.84,registerLift:2,polyDepth:4,ornamentBias:0.12},
+};
+const getGenreNarrativeProfile=genre=>GENRE_NARRATIVE_PROFILES[genre]||GENRE_NARRATIVE_PROFILES.techno;
+
+const THEME_CELLS={
+  bass:[
+    [0,0,2,null,4,2,0,-1],
+    [0,null,0,2,3,2,0,null],
+    [0,0,4,2,0,null,2,-1],
+    [0,2,0,null,5,4,2,0],
+  ],
+  synth:[
+    [0,2,4,2,5,4,2,0],
+    [0,4,2,5,4,2,1,0],
+    [0,2,5,4,2,4,7,5],
+    [0,3,5,3,6,5,3,1],
+  ],
+};
+const RESPONSE_CELLS={
+  bass:[
+    [0,null,2,0,3,2,0,-2],
+    [0,2,0,null,2,0,-1,null],
+    [0,null,4,2,0,null,2,0],
+  ],
+  synth:[
+    [2,4,5,4,2,1,0,0],
+    [4,2,5,4,2,0,1,0],
+    [5,7,5,4,2,1,0,0],
+  ],
+};
 
 // ─── GENRE DNA ────────────────────────────────────────────────────────────────
 const GENRES={
@@ -340,19 +380,24 @@ function createCompositionBlueprint(genre, modeName, progression, arpeMode){
   const hookShift=pick([-2,-1,1,2]);
   const soundCharacter=getGenreSoundCharacter(genre);
   const genreFamily=getGenreFamilyProfile(genre);
+  const narrativeProfile=getGenreNarrativeProfile(genre);
   return{
     id:`${genre}-${modeName}-${Date.now()}-${Math.floor(rnd()*9999)}`,
     genre,modeName,arpeMode,progression,
     soundCharacter,
     genreFamily,
+    narrativeProfile,
     macroEnergyCurve:pick([[0.92,1.02,0.96,1.08],[0.9,0.98,1.04,1.1],[0.88,1.0,0.95,1.12]]),
     contour,
     bassRhythm:pick(rhythmicSets.bass).slice(),
     synthRhythm:pick(rhythmicSets.synth).slice(),
+    themeCells:{bass:pick(THEME_CELLS.bass).slice(),synth:pick(THEME_CELLS.synth).slice()},
+    responseCells:{bass:pick(RESPONSE_CELLS.bass).slice(),synth:pick(RESPONSE_CELLS.synth).slice()},
     hookShift,
     answerBias:0.28+rnd()*0.26,
     repetitionBias:0.58+rnd()*0.18,
     mutationBias:0.16+rnd()*0.18,
+    polychordBias:0.18+rnd()*0.16,
     memory:{
       bassMotif:null,
       synthMotif:null,
@@ -463,41 +508,38 @@ function choosePassingTone(current,target,pool,lane,energy){
   return rnd()<0.18 && Math.abs(diff)>2 ? (pool[clamp(ci+step*2,0,pool.length-1)]||mid) : mid;
 }
 
-function getSynthChordVoicing(baseNote,pool,sectionName='groove',style='triad'){
-  const idx=noteIndexSafe(pool,baseNote);
-  const third=pool[clamp(idx+2,0,pool.length-1)]||transposeNote(baseNote,4);
-  const fifth=pool[clamp(idx+4,0,pool.length-1)]||transposeNote(baseNote,7);
-  const seventh=pool[clamp(idx+6,0,pool.length-1)]||transposeNote(baseNote,10);
-  const add9=pool[clamp(idx+8,0,pool.length-1)]||transposeNote(baseNote,14);
-  if(style==='open')return [...new Set([baseNote,fifth,add9])];
-  if(style==='seventh')return [...new Set([baseNote,third,fifth,seventh])];
-  if(sectionName==='ambient'||sectionName==='break')return [...new Set([baseNote,fifth,add9])];
-  return [...new Set([baseNote,third,fifth])];
-}
-
 function applySynthExpression(line,lengths,active,pool,sectionName='groove',opts={}){
   const chordChance=clamp(opts.chordChance??0.36,0,1);
   const holdAmt=clamp(opts.holdAmt??0.5,0,1);
   const curve=opts.curve||'balanced';
+  const profile=opts.narrativeProfile||getGenreNarrativeProfile(opts.genre||'techno');
   const outLine=[...line];
   const outLengths=[...lengths];
+  let prevVoicing=null;
   for(let i=0;i<outLine.length;i++){
     if(!active[i])continue;
     const local=i%16;
     const anchor=local===0||local===8;
     const halfCadence=local===4||local===12;
-    const shouldChord = anchor ? rnd()<chordChance*(sectionName==='drop'?1.1:sectionName==='break'?0.72:1) : halfCadence && rnd()<chordChance*0.38;
-    if(shouldChord && !Array.isArray(outLine[i])){
-      const style = curve==='glass'?'open':curve==='bloom'?'seventh':sectionName==='ambient'?'open':'triad';
-      outLine[i]=getSynthChordVoicing(outLine[i],pool,sectionName,style);
+    const shouldChord = anchor ? rnd()<chordChance*(sectionName==='drop'?1.12:sectionName==='break'?0.78:1) : halfCadence && rnd()<chordChance*0.52;
+    const shouldColor = sectionName==='break'||sectionName==='ambient'||(sectionName==='drop'&&anchor);
+    if((shouldChord||shouldColor) && !Array.isArray(outLine[i])){
+      const style = chooseChordStyle(sectionName,opts.genre||'techno',curve,profile);
+      outLine[i]=getSynthChordVoicing(outLine[i],pool,sectionName,style,prevVoicing,profile);
+      prevVoicing=outLine[i];
+    }else if(Array.isArray(outLine[i])){
+      const style = chooseChordStyle(sectionName,opts.genre||'techno',curve,profile);
+      outLine[i]=getSynthChordVoicing(outLine[i][0],pool,sectionName,style,prevVoicing,profile);
+      prevVoicing=outLine[i];
     }
     const baseLen=outLengths[i]||1;
-    let holdMult = 1 + holdAmt*(anchor?2.8:halfCadence?1.6:0.7);
-    if(curve==='snappy')holdMult*=anchor?1.2:0.72;
-    if(curve==='soft')holdMult*=1.28;
-    if(curve==='bloom')holdMult*=1.62;
-    if(curve==='glass')holdMult*=1.08;
-    if(sectionName==='break'||sectionName==='ambient')holdMult*=1.22;
+    let holdMult = 1 + holdAmt*(anchor?3.1:halfCadence?1.9:0.82);
+    if(curve==='snappy')holdMult*=anchor?1.12:0.72;
+    if(curve==='soft')holdMult*=1.32;
+    if(curve==='bloom')holdMult*=1.72;
+    if(curve==='glass')holdMult*=1.1;
+    if(sectionName==='break'||sectionName==='ambient')holdMult*=1.28;
+    if(sectionName==='drop'&&anchor)holdMult*=1.12;
     if(anchor||halfCadence)outLengths[i]=Math.min(16,Math.max(baseLen,baseLen*holdMult));
   }
   return {line:outLine,lengths:outLengths};
@@ -506,6 +548,120 @@ function applySynthExpression(line,lengths,active,pool,sectionName='groove',opts
 
 // ─── MELODIC PHRASE BUILDER ───────────────────────────────────────────────────
 // Creates motif/reply phrases with recall, section energy and controlled mutation
+
+function shiftNoteInPool(note,pool,delta=0){
+  if(Array.isArray(note))return note.map(n=>shiftNoteInPool(n,pool,delta));
+  const idx=noteIndexSafe(pool,note);
+  return pool[clamp(idx+delta,0,pool.length-1)]||note;
+}
+
+function getPhraseNarrativeRole(sectionName,phraseIndex,phraseCount){
+  const last=phraseIndex===Math.max(0,phraseCount-1);
+  if(sectionName==='intro')return phraseIndex===0?'statement':last?'lift':'answer';
+  if(sectionName==='build')return last?'climax':phraseIndex%2===0?'climb':'answer';
+  if(sectionName==='drop')return last?'cadence':phraseIndex%2===0?'statement':'answer';
+  if(sectionName==='groove')return phraseIndex%2===0?'statement':'answer';
+  if(sectionName==='break')return last?'cadence':'release';
+  if(sectionName==='tension')return last?'climax':'climb';
+  if(sectionName==='fill')return 'climax';
+  if(sectionName==='outro')return last?'release':'cadence';
+  return 'statement';
+}
+
+function applyNarrativePhrasing({line,lengths,active,pool,lane,sectionName,genre,blueprint,cycleIndex}){
+  const outLine=[...line];
+  const outLengths=[...lengths];
+  const outActive=[...active];
+  const profile=blueprint?.narrativeProfile||getGenreNarrativeProfile(genre);
+  const phraseCount=Math.max(1,Math.ceil(outLine.length/16));
+  const cadenceTargets=lane==='bass'?[pool[0],pool[4],pool[2]].filter(Boolean):[pool[0],pool[2],pool[4],pool[6]].filter(Boolean);
+  const sectionVisit=blueprint?.memory?.sectionVisits?.[sectionName]||0;
+  for(let phrase=0;phrase<phraseCount;phrase++){
+    const role=getPhraseNarrativeRole(sectionName,phrase,phraseCount);
+    const start=phrase*16;
+    const registerLift = (role==='climax'?1:role==='release'?-1:role==='lift'?1:0) + (lane==='synth'?(profile.registerLift||0):0);
+    const restBias = clamp(profile.restBias + (role==='release'?0.1:role==='climb'?-0.04:role==='climax'?-0.06:0) + (sectionName==='break'?0.08:0),0.02,0.42);
+    for(let local=0;local<16 && start+local<outLine.length;local++){
+      const abs=start+local;
+      if(!outActive[abs])continue;
+      const anchor=local===0||local===8;
+      const halfCadence=local===4||local===12;
+      const weak=!anchor && !halfCadence;
+      if(weak && rnd()<restBias*(lane==='bass'?0.82:1) && !(sectionName==='drop'&&local===14)){
+        outActive[abs]=false;
+        continue;
+      }
+      if(Array.isArray(outLine[abs])){
+        outLine[abs]=outLine[abs].map((n,idx)=>{
+          let next=shiftNoteInPool(n,pool,Math.max(-1,Math.min(2,registerLift-idx%2)));
+          if((role==='cadence'||role==='release') && (anchor||halfCadence))next=nearestPoolNote(next,pool,cadenceTargets);
+          return next;
+        });
+      }else{
+        let note=outLine[abs];
+        if(role==='answer' && local%4===2)note=shiftNoteInPool(note,pool,profile.answerShift||0);
+        if(role==='climb' && (local===6||local===10||local===14))note=shiftNoteInPool(note,pool,profile.climbLift||1);
+        if(role==='climax' && (anchor||local===14))note=shiftNoteInPool(note,pool,1+(lane==='synth'?1:0));
+        if((role==='cadence'||role==='release') && (local>=14 || halfCadence))note=nearestPoolNote(note,pool,cadenceTargets);
+        if(sectionName==='drop' && lane==='bass' && anchor && sectionVisit>0)note=nearestPoolNote(note,pool,[pool[0],pool[4],pool[2]]);
+        if(sectionName==='break' && lane==='synth' && anchor)note=shiftNoteInPool(note,pool,1);
+        if(lane==='synth' && registerLift!==0 && (anchor||local===6||local===10))note=shiftNoteInPool(note,pool,registerLift);
+        outLine[abs]=note;
+      }
+      const baseLen=outLengths[abs]||1;
+      const lenBoost = role==='climax'?1.18:role==='release'?1.26:role==='cadence'?1.12:role==='climb'?0.96:1;
+      if(anchor||halfCadence||sectionName==='break'||sectionName==='ambient')outLengths[abs]=Math.min(16,Math.max(baseLen,baseLen*lenBoost*(lane==='synth'?1.12:1.04)));
+    }
+  }
+  return {line:outLine,lengths:outLengths,active:outActive};
+}
+
+const CHORD_STYLE_BANK={
+  triad:[[0,2,4],[0,4,6],[0,2,6]],
+  open:[[0,4,8],[0,4,6],[0,5,8]],
+  seventh:[[0,2,4,6],[0,4,6,8],[0,2,6,8]],
+  add9:[[0,2,4,8],[0,4,8,10]],
+  quartal:[[0,3,6],[0,3,5,8]],
+  sus2:[[0,1,4,6],[0,1,4,8]],
+  cluster:[[0,1,3,6],[0,2,3,6]],
+  pedal:[[0,4,8],[0,2,8]],
+};
+
+function buildVoicingFromPool(baseIdx,pool,offsets){
+  return [...new Set(offsets.map(offset=>pool[clamp(baseIdx+offset,0,pool.length-1)]).filter(Boolean))];
+}
+
+function voicingDistance(candidate,previous,pool){
+  if(!previous||!previous.length)return 0;
+  const current=candidate.map(n=>noteIndexSafe(pool,n));
+  const prev=previous.map(n=>noteIndexSafe(pool,n));
+  const max=Math.max(current.length,prev.length);
+  let dist=0;
+  for(let i=0;i<max;i++)dist+=Math.abs((current[i]??current[current.length-1]??0)-(prev[i]??prev[prev.length-1]??0));
+  return dist;
+}
+
+function chooseChordStyle(sectionName,genre,curve='balanced',profile=null){
+  const palette=(profile?.chordPalette||getGenreNarrativeProfile(genre).chordPalette||['triad']).slice();
+  if(curve==='glass')return 'add9';
+  if(curve==='bloom')return palette.includes('seventh')?'seventh':palette[0]||'triad';
+  if(sectionName==='break')return palette.includes('quartal')?'quartal':palette[0]||'open';
+  if(sectionName==='drop')return palette.includes('open')?'open':palette[0]||'triad';
+  if(sectionName==='ambient')return palette.includes('add9')?'add9':palette[0]||'open';
+  return palette[0]||'triad';
+}
+
+function getSynthChordVoicing(baseNote,pool,sectionName='groove',style='triad',prevVoicing=null,profile=null){
+  const idx=noteIndexSafe(pool,baseNote);
+  const styleKey=style==='auto'?chooseChordStyle(sectionName,'techno','balanced',profile):style;
+  const families=CHORD_STYLE_BANK[styleKey]||CHORD_STYLE_BANK.triad;
+  const candidates=families.map(offsets=>buildVoicingFromPool(idx,pool,offsets)).filter(v=>v.length>=2);
+  if(!candidates.length)return [baseNote];
+  const targetCount=profile?.polyDepth||3;
+  const shaped=candidates.map(voicing=>voicing.slice(0,Math.max(2,Math.min(targetCount,voicing.length))));
+  return shaped.sort((a,b)=>voicingDistance(a,prevVoicing,pool)-voicingDistance(b,prevVoicing,pool))[0];
+}
+
 function buildMelodicLine(pool, chordProgression, steps, chaos, arpeMode, lenBias, options={}){
   const {lane='bass',sectionName='groove',blueprint=null,cycleIndex=0}=options;
   const line=mkNotes(pool[0]);
@@ -525,9 +681,12 @@ function buildMelodicLine(pool, chordProgression, steps, chaos, arpeMode, lenBia
   const longHook=(laneHooks[0]?.notes)||memory?.lastStrongHook?.notes||null;
   const hookRecallWeight=getHookRecallWeight(sectionName, blueprint?.genre||'techno');
 
+  const themeSeed=(blueprint?.themeCells?.[lane]||[]).slice();
   const motif=((memory&&Array.isArray(memory[motifKey])?memory[motifKey]:null) || (longHook&&rnd()<hookRecallWeight?longHook:null)) || Array.from({length:8},(_,idx)=>{
-    if(idx>0&&rnd()<(lane==='bass'?0.12:0.18))return null;
-    const stepHint=(blueprint?.contour?.[idx]??0)+(lane==='synth'&&idx%3===2?(blueprint?.hookShift||0):0);
+    const themeHint=themeSeed[idx%Math.max(1,themeSeed.length)] ;
+    if(themeHint===null)return null;
+    if(themeHint===undefined && idx>0&&rnd()<(lane==='bass'?0.12:0.18))return null;
+    const stepHint=((typeof themeHint==='number'?themeHint:(blueprint?.contour?.[idx]??0))+(lane==='synth'&&idx%3===2?(blueprint?.hookShift||0):0));
     const note=motifStepToNote(stepHint,firstNotes,pool,current);
     current=note||current;
     return note;
@@ -542,7 +701,13 @@ function buildMelodicLine(pool, chordProgression, steps, chaos, arpeMode, lenBia
     const deepRecall=longHook&&phrase>0&&rnd()<hookRecallWeight*(phrase%2===0?0.72:0.44);
     const mutateAmt=clamp((blueprint?.mutationBias??0.18)+chaos*0.16+(sectionName==='tension'?0.08:0),0.08,0.42);
     const rhythm=evolveRhythm(rhythmSource,lane,sectionName,chaos,cycleIndex+phrase);
-    const sourceMotif=deepRecall&&Array.isArray(longHook)?longHook:motif;
+    const narrativeRole=getPhraseNarrativeRole(sectionName,phrase,phraseCount);
+    const responseSeed=(blueprint?.responseCells?.[lane]||[]).slice();
+    const sourceMotif=deepRecall&&Array.isArray(longHook)?longHook:(narrativeRole==='answer'&&responseSeed.length?responseSeed.map((hint,idx)=>{
+      if(hint===null)return null;
+      const stepHint=(typeof hint==='number'?hint:(blueprint?.contour?.[idx]??0));
+      return motifStepToNote(stepHint,firstNotes,pool,current);
+    }):motif);
     const phraseMotif=sourceMotif.map((note,idx)=>{
       if(note===null)return null;
       if(sectionName==='fill'&&idx>=4)return voiceLead(note,pool);
@@ -601,6 +766,11 @@ function buildMelodicLine(pool, chordProgression, steps, chaos, arpeMode, lenBia
       if(on&&local%16===15&&sectionName!=='fill'&&rnd()<0.38)lengths[abs]=Math.min(8,lengths[abs]+1.5);
     }
   }
+
+  const narrated=applyNarrativePhrasing({line,lengths,active,pool,lane,sectionName,genre:blueprint?.genre||'techno',blueprint,cycleIndex});
+  line.splice(0,line.length,...narrated.line);
+  lengths.splice(0,lengths.length,...narrated.lengths);
+  active.splice(0,active.length,...narrated.active);
 
   const sectionsHistory=memory?.recentSections||[];
   const recallTail=(lane==='bass'?line[Math.max(0,steps-4)]:line[Math.max(0,steps-2)])||current;
@@ -668,9 +838,11 @@ function buildSection(genre, sectionName, modeName, progression, arpeMode, prevB
   const {line: bassLine, lengths: bassLengths, active: bassActive} = bassBuilt;
   let {line: synthLine, lengths: synthLengths, active: synthActive} = synthBuilt;
   const synthExpression = applySynthExpression(synthLine, synthLengths, synthActive, sp, sectionName, {
-    chordChance: typeof globalThis!=='undefined' && typeof globalThis.__CESIRA_SYNTH_CHORD_CHANCE__==='number' ? globalThis.__CESIRA_SYNTH_CHORD_CHANCE__ : 0.34,
+    chordChance: (typeof globalThis!=='undefined' && typeof globalThis.__CESIRA_SYNTH_CHORD_CHANCE__==='number' ? globalThis.__CESIRA_SYNTH_CHORD_CHANCE__ : 0.34) + (blueprint?.polychordBias||0),
     holdAmt: typeof globalThis!=='undefined' && typeof globalThis.__CESIRA_SYNTH_HOLD__==='number' ? globalThis.__CESIRA_SYNTH_HOLD__ : 0.56,
     curve: typeof globalThis!=='undefined' && globalThis.__CESIRA_SYNTH_CURVE__ ? globalThis.__CESIRA_SYNTH_CURVE__ : 'balanced',
+    genre,
+    narrativeProfile: blueprint?.narrativeProfile,
   });
   synthLine = synthExpression.line;
   synthLengths = synthExpression.lengths;
@@ -874,6 +1046,9 @@ const SOUND_PRESETS={
     mono_pulse:{label:'MONO PULSE',bassMode:'pulse',bassFilter:0.62,bassSubAmt:0.4,drive:0.22,compress:0.32,tone:0.48,bassDetune:0.014,bassMotion:0.4,bassPunch:0.72},
     saw_motion:{label:'SAW MOTION',bassMode:'saw',bassFilter:0.64,bassSubAmt:0.3,drive:0.3,compress:0.34,tone:0.52,bassDetune:0.012,bassMotion:0.58,bassPunch:0.7},
     reese_engine:{label:'REESE ENGINE',bassMode:'saw',bassFilter:0.54,bassSubAmt:0.36,drive:0.34,compress:0.36,tone:0.46,bassDetune:0.024,bassMotion:0.74,bassPunch:0.74},
+    club_root:{label:'CLUB ROOT',bassMode:'pulse',bassFilter:0.52,bassSubAmt:0.52,drive:0.14,compress:0.26,tone:0.58,bassDetune:0.006,bassMotion:0.22,bassPunch:0.58},
+    cinema_pedal:{label:'CINEMA PEDAL',bassMode:'drone',bassFilter:0.42,bassSubAmt:0.82,drive:0.04,compress:0.14,tone:0.68,bassDetune:0.004,bassMotion:0.34,bassPunch:0.2},
+    void_reese:{label:'VOID REESE',bassMode:'saw',bassFilter:0.5,bassSubAmt:0.44,drive:0.28,compress:0.34,tone:0.4,bassDetune:0.03,bassMotion:0.82,bassPunch:0.7},
   },
   synth:{
     velvet_pad:{label:'VELVET PAD',synthMode:'pad',synthFilter:0.64,space:0.72,tone:0.68,drive:0.08,polySynth:true,synthDetune:0.012,synthMotion:0.28,synthPunch:0.3},
@@ -893,6 +1068,10 @@ const SOUND_PRESETS={
     bell_shard:{label:'BELL SHARD',synthMode:'bell',synthFilter:0.82,space:0.48,tone:0.8,drive:0.04,polySynth:true,synthDetune:0.005,synthMotion:0.2,synthPunch:0.5},
     wide_arp:{label:'WIDE ARP',synthMode:'mist',synthFilter:0.56,space:0.52,tone:0.66,drive:0.18,polySynth:false,synthDetune:0.018,synthMotion:0.66,synthPunch:0.76},
     drone_veil:{label:'DRONE VEIL',synthMode:'pad',synthFilter:0.42,space:0.92,tone:0.54,drive:0.03,polySynth:true,synthDetune:0.02,synthMotion:0.52,synthPunch:0.16},
+    theatre_theme:{label:'THEATRE THEME',synthMode:'strings',synthFilter:0.74,space:0.7,tone:0.76,drive:0.05,polySynth:true,synthDetune:0.01,synthMotion:0.26,synthPunch:0.42},
+    opaline_chords:{label:'OPALINE CHORDS',synthMode:'organ',synthFilter:0.66,space:0.44,tone:0.72,drive:0.1,polySynth:true,fmIdx:0.58,synthDetune:0.008,synthMotion:0.18,synthPunch:0.54},
+    noir_bloom:{label:'NOIR BLOOM',synthMode:'choir',synthFilter:0.54,space:0.82,tone:0.62,drive:0.03,polySynth:true,synthDetune:0.014,synthMotion:0.28,synthPunch:0.24},
+    super_glass:{label:'SUPER GLASS',synthMode:'glass',synthFilter:0.84,space:0.62,tone:0.9,drive:0.08,polySynth:true,synthDetune:0.005,synthMotion:0.3,synthPunch:0.5},
   },
   drum:{
     tight_punch:{label:'TIGHT PUNCH',drumDecay:0.32,noiseMix:0.12,compress:0.18,drive:0.1,kickTone:0.74,snareTone:0.62,hatTone:0.82,hatOpenChance:0.08},
@@ -1165,7 +1344,7 @@ export default function App(){
     if(audioRef.current){await audioRef.current.ctx.resume();setIsReady(true);return;}
     const Ctx=window.AudioContext||window.webkitAudioContext;if(!Ctx)return;
     const ctx=new Ctx({sampleRate:44100,latencyHint:'interactive'});
-    const bus=ctx.createGain();bus.gain.value=0.68;
+    const bus=ctx.createGain();bus.gain.value=0.62;
     const preD=ctx.createWaveShaper();identityCurve(preD);
     const toneF=ctx.createBiquadFilter();toneF.type='lowpass';toneF.frequency.value=16000;toneF.Q.value=0.35;
     const comp=ctx.createDynamicsCompressor();comp.threshold.value=-24;comp.knee.value=18;comp.ratio.value=3;comp.attack.value=0.008;comp.release.value=0.22;
@@ -1402,11 +1581,17 @@ export default function App(){
     if(lane==='bass'){
       if(!bassStack)return [baseNote];
       const fifth=idx>-1?pool[Math.min(idx+4,pool.length-1)]:transposeNote(baseNote,7);
-      return [...new Set([baseNote,fifth])];
+      const octave=idx>-1?pool[Math.min(idx+7,pool.length-1)]:transposeNote(baseNote,12);
+      const notes=[baseNote,fifth];
+      if((compositionRef.current?.narrativeProfile?.polyDepth||3)>3 && currentSectionRef.current==='drop')notes.push(octave);
+      return [...new Set(notes.filter(Boolean))];
     }
+    if(Array.isArray(baseNote))return baseNote;
     if(!polySynth)return [baseNote];
-    if(idx===-1)return [...new Set([baseNote,transposeNote(baseNote,4),transposeNote(baseNote,7)])];
-    return [...new Set([pool[idx],pool[Math.min(idx+2,pool.length-1)],pool[Math.min(idx+4,pool.length-1)]])];
+    const profile=compositionRef.current?.narrativeProfile||getGenreNarrativeProfile(genre);
+    const style=chooseChordStyle(currentSectionRef.current||'groove',genre,synthCurveRef.current||'balanced',profile);
+    const voicing=getSynthChordVoicing(idx===-1?baseNote:pool[idx],pool,currentSectionRef.current||'groove',style,null,profile);
+    return [...new Set((voicing&&voicing.length?voicing:[baseNote,transposeNote(baseNote,4),transposeNote(baseNote,7)]).filter(Boolean))];
   };
 
   // ─── BASS SYNTHESIS ────────────────────────────────────────────────────────
@@ -1508,7 +1693,8 @@ export default function App(){
       const o1=a.ctx.createOscillator(),o2=a.ctx.createOscillator(),o3=a.ctx.createOscillator();
       o1.type='sawtooth';o2.type='sawtooth';o3.type='sine';
       o1.frequency.value=f;o2.frequency.value=f*(1+synthDetune);o3.frequency.value=f*(1-synthDetune*0.45);
-      const mix=a.ctx.createGain();mix.gain.value=0.33;
+      const mix=a.ctx.createGain();mix.gain.value=0.3;
+      const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=120+(1-synthFilter)*80+Math.max(0,-charCfg.synthFilterBias*120);
       const fil=a.ctx.createBiquadFilter();fil.type='lowpass';
       fil.frequency.setValueAtTime(300+(synthFilter+charCfg.synthFilterBias)*2000+energy*120,t);
       fil.frequency.linearRampToValueAtTime(800+(synthFilter+charCfg.synthFilterBias)*5000+energy*260,t+atk*2);
@@ -1517,9 +1703,9 @@ export default function App(){
       amp.gain.setValueAtTime(0,t);amp.gain.linearRampToValueAtTime((0.28+synthPunch*0.14)*accent,t+atk);
       amp.gain.setValueAtTime((0.28+synthPunch*0.14)*accent,t+Math.max(atk+0.01,dur*(0.54+synthMotion*0.14)));
       amp.gain.exponentialRampToValueAtTime(0.001,t+rel);
-      o1.connect(mix);o2.connect(mix);o3.connect(mix);mix.connect(fil);fil.connect(amp);
+      o1.connect(mix);o2.connect(mix);o3.connect(mix);mix.connect(hp);hp.connect(fil);fil.connect(amp);
       const dest=getLaneGain('synth')||a.bus;amp.connect(dest);trackNode(cleanMs);
-      gc(o1,[o2,o3,mix,fil,amp],cleanMs);
+      gc(o1,[o2,o3,mix,hp,fil,amp],cleanMs);
       ss(o1,t);ss(o2,t);ss(o3,t);st(o1,t+rel+0.1);st(o2,t+rel+0.1);st(o3,t+rel+0.1);
       return;
     }
@@ -1534,14 +1720,16 @@ export default function App(){
       mg1.gain.value=f*fmIdxRef.current*(0.55+synthPunch*0.45);mg2.gain.value=f*fmIdxRef.current*(0.24+synthMotion*0.22);
       m1.connect(mg1);mg1.connect(c1.frequency);
       m2.connect(mg2);mg2.connect(c2.frequency);
-      const mix=a.ctx.createGain();mix.gain.value=0.5;
+      const mix=a.ctx.createGain();mix.gain.value=0.42;
+      const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=150+(1-synthFilter)*90;
+      const lp=a.ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=1800+synthFilter*5000+(tone+charCfg.toneBias)*700;lp.Q.value=0.2+compress*0.4;
       const amp=a.ctx.createGain();
       amp.gain.setValueAtTime(0,t);amp.gain.linearRampToValueAtTime((0.3+synthPunch*0.16)*accent,t+atk);
       amp.gain.setValueAtTime((0.3+synthPunch*0.16)*accent,t+Math.max(atk+0.01,dur*(0.72+synthMotion*0.16)));
       amp.gain.exponentialRampToValueAtTime(0.001,t+rel);
-      c1.connect(mix);c2.connect(mix);mix.connect(amp);
+      c1.connect(mix);c2.connect(mix);mix.connect(hp);hp.connect(lp);lp.connect(amp);
       const dest=getLaneGain('synth')||a.bus;amp.connect(dest);trackNode(cleanMs);
-      gc(c1,[c2,m1,m2,mg1,mg2,mix,amp],cleanMs);
+      gc(c1,[c2,m1,m2,mg1,mg2,mix,hp,lp,amp],cleanMs);
       ss(c1,t);ss(c2,t);ss(m1,t);ss(m2,t);st(c1,t+rel+0.1);st(c2,t+rel+0.1);st(m1,t+rel+0.1);st(m2,t+rel+0.1);
       return;
     }
@@ -1554,14 +1742,15 @@ export default function App(){
       o1.frequency.value=f;o2.frequency.value=f*(1+synthDetune*0.5);
       vib.frequency.value=4.6+rnd()*0.8+synthMotion*0.9+charCfg.motionBias*0.8;vg.gain.value=1.4+(synthFilter+charCfg.synthFilterBias)*5+synthMotion*2.6+energy*0.8;
       vib.connect(vg);vg.connect(o1.frequency);vg.connect(o2.frequency);
+      const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=160+(1-synthFilter)*100;
       const fil=a.ctx.createBiquadFilter();fil.type='lowpass';fil.frequency.value=400+synthFilter*5000;fil.Q.value=0.3;
       const amp=a.ctx.createGain();
       amp.gain.setValueAtTime(0,t);amp.gain.linearRampToValueAtTime((0.26+synthPunch*0.14)*accent,t+atk);
       amp.gain.setValueAtTime((0.26+synthPunch*0.14)*accent,t+Math.max(atk+0.01,dur*(0.62+synthMotion*0.16)));
       amp.gain.exponentialRampToValueAtTime(0.001,t+rel);
-      o1.connect(fil);o2.connect(fil);fil.connect(amp);
+      o1.connect(hp);o2.connect(hp);hp.connect(fil);fil.connect(amp);
       const dest=getLaneGain('synth')||a.bus;amp.connect(dest);trackNode(cleanMs);
-      gc(o1,[o2,vib,vg,fil,amp],cleanMs);
+      gc(o1,[o2,vib,vg,hp,fil,amp],cleanMs);
       ss(o1,t);ss(o2,t);ss(vib,t);st(o1,t+rel+0.1);st(o2,t+rel+0.1);st(vib,t+rel+0.1);
       return;
     }
@@ -1574,6 +1763,7 @@ export default function App(){
     const vib=a.ctx.createOscillator(),vg=a.ctx.createGain();
     vib.frequency.value=4.8+synthMotion*1.4+charCfg.motionBias*0.9;vg.gain.value=clamp((mode==='lead'?6.5:2.4)+synthPunch*3.2+synthMotion*2+energy*1.2,0,15);
     vib.connect(vg);vg.connect(o1.frequency);
+    const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=110+(1-synthFilter)*70;
     const fil=a.ctx.createBiquadFilter();fil.type='lowpass';fil.frequency.value=200+(synthFilter+charCfg.synthFilterBias)*7000+(tone+charCfg.toneBias)*1200+energy*260;fil.Q.value=0.45+compress*2.6+synthPunch*0.8+energy*0.25;
     const amp=a.ctx.createGain();
     amp.gain.setValueAtTime(0,t);amp.gain.linearRampToValueAtTime((0.28+synthPunch*0.18)*accent,t+atk);
@@ -1581,9 +1771,9 @@ export default function App(){
     amp.gain.exponentialRampToValueAtTime(0.001,t+rel);
     const mix=a.ctx.createGain();mix.gain.value=0.5;
     const sheen=a.ctx.createBiquadFilter();sheen.type='highshelf';sheen.frequency.value=clamp(2600+(tone+charCfg.toneBias)*1800+synthMotion*900,1800,7200);sheen.gain.value=clamp((synthPunch-0.45)*6+energy*2.4,-2,5.5);
-    o1.connect(mix);o2.connect(mix);mix.connect(fil);fil.connect(sheen);sheen.connect(amp);
+    o1.connect(mix);o2.connect(mix);mix.connect(hp);hp.connect(fil);fil.connect(sheen);sheen.connect(amp);
     const dest=getLaneGain('synth')||a.bus;amp.connect(dest);trackNode(cleanMs);
-    gc(o1,[o2,vib,vg,mix,fil,sheen,amp],cleanMs);
+    gc(o1,[o2,vib,vg,mix,hp,fil,sheen,amp],cleanMs);
     ss(o1,t);ss(o2,t);ss(vib,t);st(o1,t+rel+0.1);st(o2,t+rel+0.1);st(vib,t+rel+0.1);
     if(midiRef.current){const out=[...midiRef.current.outputs.values()][0];if(out){const v=Math.round(clamp(accent,0,1)*127);out.send([0x94,NOTE_MIDI[note]||60,v]);setTimeout(()=>out.send([0x84,NOTE_MIDI[note]||60,0]),rel*1000);}}
   };
