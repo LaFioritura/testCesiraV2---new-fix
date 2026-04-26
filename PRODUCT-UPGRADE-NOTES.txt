@@ -1,15 +1,25 @@
-CESIRA PRODUCT UPGRADE — VERCEL READY
+CESIRA PRODUCT UPGRADE — INTELLIGENT EDITION — VERCEL READY
 
 What was improved without changing the visual identity:
-- Fixed BPM sync bug during genre/session creation (state and engine now agree on one BPM value).
-- Added automatic local session persistence in browser storage.
-- Added automatic restore of the last session at app boot.
-- Persisted scene bank together with the last session.
-- Improved JSON import so it can restore either a project snapshot or a full saved session bundle.
+- Fixed BPM sync bug during genre/session creation.
+- Added automatic local session persistence and automatic restore.
+- Persisted scene bank together with the session.
+- Improved JSON import/export: now exports a full session bundle (snapshot + saved scenes), while remaining backward-compatible with older project JSON files.
 - Added panic reset on ESC to fully reset the audio engine if needed.
-- Prevented the app from overwriting the initial status with “Autopilot off” on first boot.
 - Improved recording memory handling by revoking dropped object URLs and cleaning them on teardown.
-- Kept the project Vite/Vercel compatible and rebuilt production dist.
+
+New functional upgrades in this package:
+- Added true REDO support alongside UNDO.
+- Added keyboard redo shortcuts: Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y.
+- Note editing now also enters undo history correctly.
+- Song arc preset buttons now work for real: they arm a specific arc and the Start Arc command launches the selected preset.
+- Added named arc presets in Song view for quicker arrangement choices.
+- Song/session snapshots now also remember arc selection and arc progress.
+- Rebuilt the autopilot to act on bar boundaries instead of loose timeouts, so changes happen more musically and less randomly.
+- Made autopilot section-aware: intros, builds, drops, breaks, fills and outros now bias different transformation behaviors.
+- Improved section changes so manual or autopilot transitions reset phrase counters more cleanly.
+- Fixed several live-edit actions to use current pattern refs instead of potentially stale state snapshots.
+- Scene labels now carry more useful context (genre / section / time).
 
 Deploy:
 1. Upload the folder to GitHub.
@@ -21,4 +31,5 @@ Deploy:
 Notes:
 - node_modules is intentionally not included.
 - local session restore works in the browser that created the session.
-- ESC closes and rebuilds the audio engine on next play/init.
+- the app remains fully browser-based and Vercel-compatible.
+- older saved sessions remain readable because snapshot versions 2–7 are supported.

@@ -5,9 +5,9 @@ import React,{useCallback,useEffect,useRef,useState}from'react';
 // Full-screen, self-composing, live-performable, export-ready
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MAX_STEPS=64,PAGE=16,SCHED=0.14,LOOK=20,UNDO=32;
+const MAX_STEPS=64,PAGE=16,SCHED=0.14,LOOK=20,UNDO=32,REDO=32;
 const SESSION_STORAGE_KEY='cesira-session-v6';
-const SESSION_PAYLOAD_VERSION=6;
+const SESSION_PAYLOAD_VERSION=7;
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
 const rnd=()=>Math.random();
 const pick=a=>a[Math.floor(rnd()*a.length)];
@@ -138,6 +138,7 @@ const SONG_ARCS=[
   ['intro','tension','build','drop','groove','drop','outro'],
   ['groove','groove','break','tension','drop','groove','outro'],
 ];
+const SONG_ARC_NAMES=['CATWALK IMPACT','PRESSURE WAVE','NIGHT MACHINE','ASCENT RITUAL','AFTERHOURS ARC'];
 
 const GROOVE_MAPS={
   steady:{kB:0.22,sB:0.16,hB:0.58,bB:0.22,syB:0.12},
@@ -809,14 +810,14 @@ function buildSection(genre, sectionName, modeName, progression, arpeMode, prevB
   return {patterns:p, bassLine, synthLine, laneLen, lastBass:lb, macroEnergy, soundCharacter};
 }
 
-function buildSong(genre){
+function buildSong(genre,overrideArc=null){
   const gd=GENRES[genre];
   const modeName=pick(gd.modes);
   const progPool=CHORD_PROGS[modeName]||CHORD_PROGS.minor;
   const progression=pick(progPool);
   const arpeMode=pick(['up','down','updown','outside']);
   const bpm=Math.round(gd.bpm[0]+rnd()*(gd.bpm[1]-gd.bpm[0]));
-  const arc=pick(SONG_ARCS);
+  const arc=(overrideArc&&overrideArc.length)?[...overrideArc]:pick(SONG_ARCS);
   const composition=createCompositionBlueprint(genre,modeName,progression,arpeMode);
   const soundCharacter=composition.soundCharacter;
   const genreFamily=composition.genreFamily;
@@ -985,12 +986,17 @@ export default function App(){
   const [currentSectionName,setCurrentSectionName]=useState('groove');
   const [modeName,setModeName]=useState('minor');
   const [songArc,setSongArc]=useState([]);
+  const [selectedArcIdx,setSelectedArcIdx]=useState(0);
+  const selectedArcIdxRef=useRef(0);
+  useEffect(()=>{selectedArcIdxRef.current=selectedArcIdx;},[selectedArcIdx]);
   const [arcIdx,setArcIdx]=useState(0);
   const [songActive,setSongActive]=useState(false);
   const songActiveRef=useRef(false);
   const arcRef=useRef([]);
   const arcIdxRef=useRef(0);
   const barCountRef=useRef(0);// bars elapsed in current section
+  const currentSectionRef=useRef('groove');
+  useEffect(()=>{currentSectionRef.current=currentSectionName;},[currentSectionName]);
 
   // ── Patterns
   const [patterns,setPatterns]=useState({kick:mkSteps(),snare:mkSteps(),hat:mkSteps(),bass:mkSteps(),synth:mkSteps()});
@@ -1070,7 +1076,9 @@ export default function App(){
   const [autopilot,setAutopilot]=useState(false);
   const autopilotRef=useRef(false);
   useEffect(()=>{autopilotRef.current=autopilot;},[autopilot]);
-  const autopilotTimerRef=useRef(null);
+  const autopilotBarRef=useRef(0);
+  const autopilotActionBudgetRef=useRef(0);
+  const autopilotStatusBootRef=useRef(false);
   const [autopilotIntensity,setAutopilotIntensity]=useState(0.5);
 
   // ── Composition seed for transformations
@@ -1099,12 +1107,13 @@ export default function App(){
   const [savedScenes,setSavedScenes]=useState([null,null,null,null,null,null]);
   const didHydrateRef=useRef(false);
   const persistTimerRef=useRef(null);
-  const autopilotBootRef=useRef(false);
   const [midiOk,setMidiOk]=useState(false);
   const midiRef=useRef(null);
   const [tapTimes,setTapTimes]=useState([]);
   const undoStack=useRef([]);
+  const redoStack=useRef([]);
   const [undoLen,setUndoLen]=useState(0);
+  const [redoLen,setRedoLen]=useState(0);
   const [vizData,setVizData]=useState(new Uint8Array(64));
   const transportBarRef=useRef(0);
 
@@ -1126,7 +1135,8 @@ export default function App(){
     if(recorderRef.current?.state==='recording'){
       try{recorderRef.current.stop();}catch{}
     }
-    if(autopilotTimerRef.current)clearTimeout(autopilotTimerRef.current);
+    autopilotBarRef.current=0;
+    autopilotActionBudgetRef.current=0;
     stopClock();
     const a=audioRef.current;
     audioRef.current=null;
@@ -1626,19 +1636,23 @@ export default function App(){
       const delay=Math.max(0,(noteT-audioRef.current.ctx.currentTime)*1000);
       setTimeout(()=>flashLane(lane,fa),delay);
     }
-    // Song arc — advance section every N bars
-    if(si===0&&songActiveRef.current){
-      barCountRef.current++;
-      const arc=arcRef.current;
-      if(arc.length>0){
-        const sec=SECTIONS[arc[arcIdxRef.current]]||SECTIONS.groove;
-        if(barCountRef.current>=sec.bars){
+    // Song arc + bar-synced autopilot
+    if(si===0){
+      const activeArc=songActiveRef.current&&arcRef.current.length?arcRef.current:[currentSectionRef.current];
+      const activeSectionName=songActiveRef.current?(activeArc[arcIdxRef.current]||currentSectionRef.current):currentSectionRef.current;
+      const activeSection=SECTIONS[activeSectionName]||SECTIONS.groove;
+      const phraseLength=Math.max(1,activeSection.bars||4);
+      const phraseBar=Math.min(phraseLength,barCountRef.current+1);
+      runAutopilotBar(phraseBar,phraseLength);
+      if(songActiveRef.current){
+        barCountRef.current++;
+        if(barCountRef.current>=phraseLength){
           barCountRef.current=0;
-          const nextIdx=(arcIdxRef.current+1)%arc.length;
+          const nextIdx=(arcIdxRef.current+1)%activeArc.length;
           arcIdxRef.current=nextIdx;
           setArcIdx(nextIdx);
-          const nextSec=arc[nextIdx];
-          setCurrentSectionName(nextSec);
+          const nextSec=activeArc[nextIdx];
+          setCurrentSectionName(nextSec);currentSectionRef.current=nextSec;
           regenerateSection(nextSec,false);
         }
       }
@@ -1729,7 +1743,7 @@ export default function App(){
     setSpace(gd.fxProfile.space);setTone(gd.fxProfile.tone);setDrive(gd.fxProfile.drive*2);
     setNoiseMix(gd.chaos*0.4);setCompress(gd.density*0.4);
     const sec=pick(Object.keys(SECTIONS));
-    setCurrentSectionName(sec);
+    setCurrentSectionName(sec);currentSectionRef.current=sec;barCountRef.current=0;autopilotBarRef.current=0;
     lastBassRef.current='C2';
     let result=buildSection(g,sec,mName,prog,aMode,'C2',compositionRef.current,compositionCycleRef.current);
     result=preserveLockedLanes(result,patternsRef.current,bassRef.current,synthRef.current,patternAuthorityRef.current);
@@ -1747,7 +1761,7 @@ export default function App(){
 
   // Section jump trigger
   const triggerSection=(sec)=>{
-    setCurrentSectionName(sec);regenerateSection(sec);
+    setCurrentSectionName(sec);currentSectionRef.current=sec;barCountRef.current=0;autopilotBarRef.current=0;regenerateSection(sec);
   };
 
   // Live performance actions
@@ -1809,7 +1823,7 @@ export default function App(){
       const sp=mode.s;
       if(patternAuthorityRef.current.synth==='lock'){setStatus('Synth locked');return;}
       pushUndo();
-      setSynthLine(prev=>{const n=prev.map((v,i)=>patterns.synth[i]?.on?pick(sp):v);synthRef.current=n;return n;});
+      setSynthLine(prev=>{const active=patternsRef.current.synth;const n=prev.map((v,i)=>active[i]?.on?pick(sp):v);synthRef.current=n;return n;});
       setStatus('Synth notes randomized');
     },
     randomizeBass:()=>{
@@ -1817,15 +1831,15 @@ export default function App(){
       const bp=mode.b;
       if(patternAuthorityRef.current.bass==='lock'){setStatus('Bass locked');return;}
       pushUndo();
-      setBassLine(prev=>{const n=prev.map((v,i)=>patterns.bass[i]?.on?pick(bp):v);bassRef.current=n;return n;});
+      setBassLine(prev=>{const active=patternsRef.current.bass;const n=prev.map((v,i)=>active[i]?.on?pick(bp):v);bassRef.current=n;return n;});
       setStatus('Bass notes randomized');
     },
     shiftNotesUp:()=>{
       const mode=MODES[modeName]||MODES.minor;
       ['bass','synth'].forEach(lane=>{
         const pool=lane==='bass'?mode.b:mode.s;
-        if(lane==='bass')setBassLine(prev=>{const n=prev.map((v,i)=>{if(!patterns[lane][i]?.on)return v;const idx=pool.indexOf(v);return pool[Math.min(idx+1,pool.length-1)];});bassRef.current=n;return n;});
-        else setSynthLine(prev=>{const n=prev.map((v,i)=>{if(!patterns[lane][i]?.on)return v;const idx=pool.indexOf(v);return pool[Math.min(idx+1,pool.length-1)];});synthRef.current=n;return n;});
+        if(lane==='bass')setBassLine(prev=>{const active=patternsRef.current[lane];const n=prev.map((v,i)=>{if(!active[i]?.on)return v;const idx=pool.indexOf(v);return pool[Math.min(idx+1,pool.length-1)];});bassRef.current=n;return n;});
+        else setSynthLine(prev=>{const active=patternsRef.current[lane];const n=prev.map((v,i)=>{if(!active[i]?.on)return v;const idx=pool.indexOf(v);return pool[Math.min(idx+1,pool.length-1)];});synthRef.current=n;return n;});
       });
       setStatus('Notes shifted up');
     },
@@ -1833,8 +1847,8 @@ export default function App(){
       const mode=MODES[modeName]||MODES.minor;
       ['bass','synth'].forEach(lane=>{
         const pool=lane==='bass'?mode.b:mode.s;
-        if(lane==='bass')setBassLine(prev=>{const n=prev.map((v,i)=>{if(!patterns[lane][i]?.on)return v;const idx=pool.indexOf(v);return pool[Math.max(idx-1,0)];});bassRef.current=n;return n;});
-        else setSynthLine(prev=>{const n=prev.map((v,i)=>{if(!patterns[lane][i]?.on)return v;const idx=pool.indexOf(v);return pool[Math.max(idx-1,0)];});synthRef.current=n;return n;});
+        if(lane==='bass')setBassLine(prev=>{const active=patternsRef.current[lane];const n=prev.map((v,i)=>{if(!active[i]?.on)return v;const idx=pool.indexOf(v);return pool[Math.max(idx-1,0)];});bassRef.current=n;return n;});
+        else setSynthLine(prev=>{const active=patternsRef.current[lane];const n=prev.map((v,i)=>{if(!active[i]?.on)return v;const idx=pool.indexOf(v);return pool[Math.max(idx-1,0)];});synthRef.current=n;return n;});
       });
       setStatus('Notes shifted down');
     },
@@ -1851,45 +1865,93 @@ export default function App(){
   };
 
   // ─── AUTOPILOT ────────────────────────────────────────────────────────────
-  const runAutopilot=useCallback(()=>{
-    if(!autopilotRef.current)return;
-    const intensity=autopilotIntensity;
-    const actions=Object.keys(perfActions);
-    const r=rnd();
-    if(r<0.25*intensity)perfActions.mutate();
-    else if(r<0.4*intensity)perfActions.shiftArp();
-    else if(r<0.55)regenerateSection(currentSectionName);
-    else if(r<0.65*intensity)perfActions.thinOut();
-    else if(r<0.75*intensity)perfActions.thicken();
-    else if(r<0.82)perfActions.reharmonize();
-    // Section changes with lower probability
-    if(rnd()<0.15*intensity){
-      const sections=Object.keys(SECTIONS);
-      triggerSection(pick(sections));
+  const chooseAutopilotAction=(sectionName,phraseBar=1,phraseLength=4)=>{
+    const intensity=clamp(autopilotIntensity,0,1);
+    const nearTurn=phraseBar>=phraseLength;
+    const midPhrase=phraseBar===Math.max(1,Math.ceil(phraseLength*0.5));
+    const weighted=(items)=>{
+      const total=items.reduce((sum,[,w])=>sum+w,0);
+      let cursor=rnd()*total;
+      for(const[item,w]of items){cursor-=w;if(cursor<=0)return item;}
+      return items[items.length-1]?.[0]||null;
+    };
+    const pools={
+      intro:[['thinOut',2.4],['regenerate',1.6],['randomizeNotes',1.1],['shiftArp',0.9]],
+      build:[['thicken',2.4],['mutate',1.7],['shiftArp',1.3],['reharmonize',0.9]],
+      drop:[['mutate',2.1],['thicken',1.9],['randomizeBass',1.25],['regenerate',0.95]],
+      groove:[['mutate',1.75],['randomizeBass',1.35],['randomizeNotes',1.15],['reharmonize',0.8]],
+      break:[['thinOut',2.2],['randomizeNotes',1.4],['shiftArp',1.0],['regenerate',0.95]],
+      tension:[['thicken',1.9],['shiftArp',1.5],['mutate',1.4],['reharmonize',0.95]],
+      fill:[['mutate',2.35],['thicken',1.5],['randomizeBass',1.0],['regenerate',0.9]],
+      outro:[['thinOut',2.5],['randomizeNotes',0.9],['regenerate',0.8],['shiftArp',0.5]],
+    };
+    if(!songActiveRef.current && nearTurn && rnd()<0.16+intensity*0.24){
+      const map={intro:['build','groove'],build:['drop','tension'],groove:['break','tension','drop'],break:['build','outro'],tension:['drop','fill'],fill:['drop','groove'],drop:['groove','break','outro'],outro:['intro','groove']};
+      const target=pick(map[sectionName]||Object.keys(SECTIONS));
+      return {kind:'section',target};
     }
-    const nextDelay=(8+rnd()*16)*(1-intensity*0.4)*1000*(240/bpm);
-    autopilotTimerRef.current=setTimeout(runAutopilot,nextDelay);
-  },[autopilotIntensity,currentSectionName,genre,bpm]);
+    const cadenceBoost=nearTurn?0.55:midPhrase?0.25:0;
+    const pool=(pools[sectionName]||pools.groove).map(([name,weight])=>[name,weight+cadenceBoost*(name==='mutate'||name==='thicken'||name==='regenerate'?1:0.4)+(intensity>0.72&&name==='reharmonize'?0.25:0)]);
+    if(intensity<0.34 && rnd()<0.34)return null;
+    return {kind:'action',target:weighted(pool)};
+  };
+
+  const runAutopilotBar=(phraseBar=1,phraseLength=4)=>{
+    if(!autopilotRef.current)return;
+    if(autopilotActionBudgetRef.current>0){
+      autopilotActionBudgetRef.current-=1;
+      return;
+    }
+    const intensity=clamp(autopilotIntensity,0,1);
+    autopilotBarRef.current+=1;
+    const everyBars=intensity>=0.82?1:intensity>=0.56?2:3;
+    if(autopilotBarRef.current<everyBars && phraseBar!==phraseLength)return;
+    autopilotBarRef.current=0;
+    const decision=chooseAutopilotAction(currentSectionRef.current,phraseBar,phraseLength);
+    if(!decision)return;
+    if(decision.kind==='section'){
+      autopilotActionBudgetRef.current=1;
+      triggerSection(decision.target);
+      setStatus(`Autopilot → ${decision.target}`);
+      return;
+    }
+    const actionName=decision.target;
+    if(actionName==='regenerate')regenerateSection(currentSectionRef.current);
+    else if(actionName==='reharmonize')perfActions.reharmonize();
+    else if(actionName==='mutate')perfActions.mutate();
+    else if(actionName==='thinOut')perfActions.thinOut();
+    else if(actionName==='thicken')perfActions.thicken();
+    else if(actionName==='randomizeNotes')perfActions.randomizeNotes();
+    else if(actionName==='randomizeBass')perfActions.randomizeBass();
+    else if(actionName==='shiftArp')perfActions.shiftArp();
+    autopilotActionBudgetRef.current=actionName==='reharmonize'?1:0;
+    setStatus(`Autopilot → ${actionName.replace(/([A-Z])/g,' $1').toLowerCase()}`);
+  };
 
   useEffect(()=>{
-    if(!autopilotBootRef.current){
-      autopilotBootRef.current=true;
+    if(!autopilotStatusBootRef.current){
+      autopilotStatusBootRef.current=true;
       if(!autopilot)return;
     }
-    if(autopilot){
-      setStatus('Autopilot engaged');
-      const delay=(4+rnd()*8)*1000*(240/bpm);
-      autopilotTimerRef.current=setTimeout(runAutopilot,delay);
-    } else {
-      if(autopilotTimerRef.current)clearTimeout(autopilotTimerRef.current);
-      setStatus('Autopilot off');
-    }
-    return()=>{if(autopilotTimerRef.current)clearTimeout(autopilotTimerRef.current);};
-  },[autopilot,runAutopilot,bpm]);
+    autopilotBarRef.current=0;
+    autopilotActionBudgetRef.current=0;
+    setStatus(autopilot?'Autopilot engaged':'Autopilot off');
+  },[autopilot]);
 
   // ─── SONG ARC ─────────────────────────────────────────────────────────────
-  const startSongArc=()=>{
-    const song=buildSong(genre);
+  const armSongArc=(index,announce=true)=>{
+    const safeIndex=clamp(index,0,SONG_ARCS.length-1);
+    const nextArc=[...(SONG_ARCS[safeIndex]||SONG_ARCS[0])];
+    setSelectedArcIdx(safeIndex);selectedArcIdxRef.current=safeIndex;
+    setSongArc(nextArc);arcRef.current=nextArc;
+    setArcIdx(0);arcIdxRef.current=0;
+    barCountRef.current=0;
+    if(announce)setStatus(`Arc armed — ${SONG_ARC_NAMES[safeIndex]||`Preset ${safeIndex+1}`}`);
+  };
+  const startSongArc=(presetIndex=selectedArcIdxRef.current)=>{
+    const safeIndex=clamp(presetIndex,0,SONG_ARCS.length-1);
+    const selectedArc=[...(SONG_ARCS[safeIndex]||SONG_ARCS[0])];
+    const song=buildSong(genre,selectedArc);
     compositionRef.current=song.composition;
     compositionCycleRef.current=0;
     progressionRef.current=song.progression;
@@ -1897,31 +1959,67 @@ export default function App(){
     setModeName(song.modeName);
     setArpMode(song.arpeMode);
     setBpm(song.bpm);bpmRef.current=song.bpm;
+    setSelectedArcIdx(safeIndex);selectedArcIdxRef.current=safeIndex;
     setSongArc(song.arc);arcRef.current=song.arc;
     setArcIdx(0);arcIdxRef.current=0;
     barCountRef.current=0;
     setSongActive(true);songActiveRef.current=true;
-    setCurrentSectionName(song.arc[0]);
+    setCurrentSectionName(song.arc[0]);currentSectionRef.current=song.arc[0];
     setTimeout(()=>regenerateSection(song.arc[0]),0);
-    setStatus(`Song arc started: ${song.arc.join(' → ')}`);
+    setStatus(`Song arc started — ${SONG_ARC_NAMES[safeIndex]||`Preset ${safeIndex+1}`}`);
   };
   const stopSongArc=()=>{
     setSongActive(false);songActiveRef.current=false;
+    barCountRef.current=0;
     setStatus('Song arc stopped');
   };
 
   // ─── UNDO/REDO ────────────────────────────────────────────────────────────
+  const captureEditSnapshot=()=>({
+    patterns:{
+      kick:patternsRef.current.kick.map(s=>({...s})),
+      snare:patternsRef.current.snare.map(s=>({...s})),
+      hat:patternsRef.current.hat.map(s=>({...s})),
+      bass:patternsRef.current.bass.map(s=>({...s})),
+      synth:patternsRef.current.synth.map(s=>({...s})),
+    },
+    bassLine:[...bassRef.current],
+    synthLine:[...synthRef.current],
+    laneLen:{...laneLenRef.current},
+  });
+  const restoreEditSnapshot=snap=>{
+    if(!snap)return;
+    setPatterns(snap.patterns);setBassLine(snap.bassLine);setSynthLine(snap.synthLine);
+    if(snap.laneLen){setLaneLen(snap.laneLen);laneLenRef.current=snap.laneLen;}
+    patternsRef.current=snap.patterns;bassRef.current=snap.bassLine;synthRef.current=snap.synthLine;
+  };
+  const clearHistory=()=>{undoStack.current=[];redoStack.current=[];setUndoLen(0);setRedoLen(0);};
   const pushUndo=()=>{
-    const snap={patterns:{...patternsRef.current},bassLine:[...bassRef.current],synthLine:[...synthRef.current]};
+    const snap=captureEditSnapshot();
     undoStack.current=[snap,...undoStack.current.slice(0,UNDO-1)];
+    redoStack.current=[];
     setUndoLen(undoStack.current.length);
+    setRedoLen(0);
   };
   const undo=()=>{
     if(!undoStack.current.length)return;
-    const snap=undoStack.current.shift();setUndoLen(undoStack.current.length);
-    setPatterns(snap.patterns);setBassLine(snap.bassLine);setSynthLine(snap.synthLine);
-    patternsRef.current=snap.patterns;bassRef.current=snap.bassLine;synthRef.current=snap.synthLine;
+    const current=captureEditSnapshot();
+    const snap=undoStack.current.shift();
+    redoStack.current=[current,...redoStack.current.slice(0,REDO-1)];
+    setUndoLen(undoStack.current.length);
+    setRedoLen(redoStack.current.length);
+    restoreEditSnapshot(snap);
     setStatus('Undo');
+  };
+  const redo=()=>{
+    if(!redoStack.current.length)return;
+    const current=captureEditSnapshot();
+    const snap=redoStack.current.shift();
+    undoStack.current=[current,...undoStack.current.slice(0,UNDO-1)];
+    setRedoLen(redoStack.current.length);
+    setUndoLen(undoStack.current.length);
+    restoreEditSnapshot(snap);
+    setStatus('Redo');
   };
 
   // ─── SAVE/LOAD ────────────────────────────────────────────────────────────
@@ -1929,14 +2027,17 @@ export default function App(){
     v:SESSION_PAYLOAD_VERSION,genre,modeName,bpm,currentSectionName,grooveProfile,arpMode:arpModeRef.current,progression:progressionRef.current,
     space,tone,noiseMix,drive,compress,bassFilter,synthFilter,drumDecay,bassSubAmt,fmIdx,
     master,swing,humanize,grooveAmt,projectName,polySynth,bassStack,bassPreset,synthPreset,drumPreset,performancePreset,soundCharacter,compositionEnergy,patternAuthority,laneVolume,laneProbability,synthChordChance,synthHold,synthCurve,genreFamily:compositionRef.current?.genreFamily||getGenreFamilyProfile(genre),
+    selectedArcIdx:selectedArcIdxRef.current,songArc:arcRef.current,arcIdx:arcIdxRef.current,
     patterns,bassLine,synthLine,laneLen,
   });
   const applySnap=(snap)=>{
-    if(!snap||(snap.v!==2&&snap.v!==3&&snap.v!==4&&snap.v!==5&&snap.v!==6))return;
+    if(!snap||![2,3,4,5,6,7].includes(snap.v))return;
     stopClock();
+    setSongActive(false);songActiveRef.current=false;
     setGenre(snap.genre||'techno');setModeName(snap.modeName||'minor');setBpm(snap.bpm||128);bpmRef.current=snap.bpm||128;
     progressionRef.current=snap.progression||progressionRef.current;
-    setCurrentSectionName(snap.currentSectionName||'groove');setGrooveProfile(snap.grooveProfile||'steady');
+    const restoredSection=snap.currentSectionName||'groove';
+    setCurrentSectionName(restoredSection);currentSectionRef.current=restoredSection;setGrooveProfile(snap.grooveProfile||'steady');grooveProfileRef.current=snap.grooveProfile||'steady';
     setArpMode(snap.arpMode||'up');arpModeRef.current=snap.arpMode||'up';
     compositionRef.current=createCompositionBlueprint(snap.genre||'techno',snap.modeName||'minor',progressionRef.current,arpModeRef.current);
     compositionRef.current.soundCharacter=snap.soundCharacter||compositionRef.current.soundCharacter||getGenreSoundCharacter(snap.genre||'techno');
@@ -1944,18 +2045,39 @@ export default function App(){
     compositionCycleRef.current=0;
     setSpace(snap.space??0.3);setTone(snap.tone??0.7);setNoiseMix(snap.noiseMix??0.2);setDrive(snap.drive??0.1);
     setCompress(snap.compress??0.3);setBassFilter(snap.bassFilter??0.55);setSynthFilter(snap.synthFilter??0.65);
-    setDrumDecay(snap.drumDecay??0.5);setBassSubAmt(snap.bassSubAmt??0.5);setFmIdx(snap.fmIdx??0.6);
-    setMaster(snap.master??0.85);setSwing(snap.swing??0.03);setHumanize(snap.humanize??0.012);setGrooveAmt(snap.grooveAmt??0.65);setPolySynth(snap.polySynth??true);setBassStack(snap.bassStack??true);setBassPreset(snap.bassPreset??'sub_floor');setSynthPreset(snap.synthPreset??'velvet_pad');setDrumPreset(snap.drumPreset??'tight_punch');setPerformancePreset(snap.performancePreset??'club_night');setSoundCharacter(snap.soundCharacter??compositionRef.current.soundCharacter??getGenreSoundCharacter(snap.genre||'techno'));soundCharacterRef.current=snap.soundCharacter??compositionRef.current.soundCharacter??getGenreSoundCharacter(snap.genre||'techno');setCompositionEnergy(snap.compositionEnergy??0.68);compositionEnergyRef.current=snap.compositionEnergy??0.68;const nextAuthority={...defaultPatternAuthority(),...(snap.patternAuthority||{})};setPatternAuthority(nextAuthority);patternAuthorityRef.current=nextAuthority;const nextLaneVolume={...defaultLaneVolume(),...(snap.laneVolume||{})};setLaneVolume(nextLaneVolume);laneVolumeRef.current=nextLaneVolume;const nextLaneProbability={...defaultLaneProbability(),...(snap.laneProbability||{})};setLaneProbability(nextLaneProbability);laneProbabilityRef.current=nextLaneProbability;const nextSynthChordChance=snap.synthChordChance??0.34;setSynthChordChance(nextSynthChordChance);synthChordChanceRef.current=nextSynthChordChance;const nextSynthHold=snap.synthHold??0.56;setSynthHold(nextSynthHold);synthHoldRef.current=nextSynthHold;const nextSynthCurve=SYNTH_CURVES.includes(snap.synthCurve)?snap.synthCurve:'balanced';setSynthCurve(nextSynthCurve);synthCurveRef.current=nextSynthCurve;
+    setDrumDecay(snap.drumDecay??0.5);setBassSubAmt(snap.bassSubAmt??0.5);setFmIdx(snap.fmIdx??0.6);fmIdxRef.current=snap.fmIdx??0.6;
+    setMaster(snap.master??0.85);setSwing(snap.swing??0.03);swingRef.current=snap.swing??0.03;setHumanize(snap.humanize??0.012);humanizeRef.current=snap.humanize??0.012;setGrooveAmt(snap.grooveAmt??0.65);grooveRef.current=snap.grooveAmt??0.65;
+    setPolySynth(snap.polySynth??true);setBassStack(snap.bassStack??true);setBassPreset(snap.bassPreset??'sub_floor');setSynthPreset(snap.synthPreset??'velvet_pad');setDrumPreset(snap.drumPreset??'tight_punch');setPerformancePreset(snap.performancePreset??'club_night');setSoundCharacter(snap.soundCharacter??compositionRef.current.soundCharacter??getGenreSoundCharacter(snap.genre||'techno'));soundCharacterRef.current=snap.soundCharacter??compositionRef.current.soundCharacter??getGenreSoundCharacter(snap.genre||'techno');setCompositionEnergy(snap.compositionEnergy??0.68);compositionEnergyRef.current=snap.compositionEnergy??0.68;const nextAuthority={...defaultPatternAuthority(),...(snap.patternAuthority||{})};setPatternAuthority(nextAuthority);patternAuthorityRef.current=nextAuthority;const nextLaneVolume={...defaultLaneVolume(),...(snap.laneVolume||{})};setLaneVolume(nextLaneVolume);laneVolumeRef.current=nextLaneVolume;const nextLaneProbability={...defaultLaneProbability(),...(snap.laneProbability||{})};setLaneProbability(nextLaneProbability);laneProbabilityRef.current=nextLaneProbability;const nextSynthChordChance=snap.synthChordChance??0.34;setSynthChordChance(nextSynthChordChance);synthChordChanceRef.current=nextSynthChordChance;const nextSynthHold=snap.synthHold??0.56;setSynthHold(nextSynthHold);synthHoldRef.current=nextSynthHold;const nextSynthCurve=SYNTH_CURVES.includes(snap.synthCurve)?snap.synthCurve:'balanced';setSynthCurve(nextSynthCurve);synthCurveRef.current=nextSynthCurve;
     if(snap.projectName)setProjectName(snap.projectName);
+    const restoredArc=Array.isArray(snap.songArc)&&snap.songArc.length?snap.songArc:[...(SONG_ARCS[snap.selectedArcIdx||0]||SONG_ARCS[0])];
+    const restoredArcIndex=clamp(snap.selectedArcIdx||0,0,SONG_ARCS.length-1);
+    setSelectedArcIdx(restoredArcIndex);selectedArcIdxRef.current=restoredArcIndex;
+    setSongArc(restoredArc);arcRef.current=restoredArc;setArcIdx(clamp(snap.arcIdx||0,0,Math.max(0,restoredArc.length-1)));arcIdxRef.current=clamp(snap.arcIdx||0,0,Math.max(0,restoredArc.length-1));
     if(snap.patterns){setPatterns(snap.patterns);patternsRef.current=snap.patterns;}
     if(snap.bassLine){setBassLine(snap.bassLine);bassRef.current=snap.bassLine;}
     if(snap.synthLine){setSynthLine(snap.synthLine);synthRef.current=snap.synthLine;}
     if(snap.laneLen){setLaneLen(snap.laneLen);laneLenRef.current=snap.laneLen;}
+    autopilotBarRef.current=0;autopilotActionBudgetRef.current=0;
+    clearHistory();
     setStatus('Scene loaded');
   };
-  const saveScene=slot=>{setSavedScenes(p=>p.map((v,i)=>i===slot?{...serialize(),label:`S${slot+1} ${new Date().toLocaleTimeString()}`}:v));setStatus(`Scene ${slot+1} saved`);};
+  const saveScene=slot=>{
+    const now=new Date();
+    const stamp=`${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    setSavedScenes(p=>p.map((v,i)=>i===slot?{...serialize(),label:`${genre.toUpperCase()} · ${currentSectionRef.current.toUpperCase()} · ${stamp}`}:v));
+    setStatus(`Scene ${slot+1} saved`);
+  };
   const loadScene=slot=>{if(savedScenes[slot])applySnap(savedScenes[slot]);};
-  const exportJSON=()=>{const b=new Blob([JSON.stringify(serialize(),null,2)],{type:'application/json'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=`${projectName.replace(/\s+/g,'-').toLowerCase()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(u),500);setStatus('Exported');};
+  const exportJSON=()=>{
+    const payload={
+      version:SESSION_PAYLOAD_VERSION,
+      exportedAt:new Date().toISOString(),
+      snapshot:serialize(),
+      savedScenes,
+    };
+    const b=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+    const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=`${projectName.replace(/\s+/g,'-').toLowerCase()}-session.json`;a.click();setTimeout(()=>URL.revokeObjectURL(u),500);setStatus('Session exported');
+  };
   const importRef=useRef(null);
   const normalizeSessionPayload=payload=>{
     if(payload?.snapshot)return{snapshot:payload.snapshot,savedScenes:Array.isArray(payload.savedScenes)?payload.savedScenes.slice(0,6):null};
@@ -2112,6 +2234,7 @@ export default function App(){
     setStatus(`${laneAuthorityKey(lane).toUpperCase()} locked to your pattern`);
   };
   const setNote=(lane,idx,note)=>{
+    pushUndo();
     setAuthorityForLane(lane,'lock');
     if(lane==='bass')setBassLine(p=>{const n=[...p];n[idx]=note;bassRef.current=n;return n;});
     else setSynthLine(p=>{const n=[...p];n[idx]=note;synthRef.current=n;return n;});
@@ -2138,7 +2261,8 @@ export default function App(){
       else if(e.code==='KeyM')perfActions.mutate();
       else if(e.code==='KeyR')regenerateSection(currentSectionName);
       else if(e.code==='KeyP')setAutopilot(v=>!v);
-      else if(e.code==='KeyZ'&&(e.metaKey||e.ctrlKey))undo();
+      else if((e.code==='KeyZ'&&(e.metaKey||e.ctrlKey)&&e.shiftKey)|| (e.code==='KeyY'&&(e.metaKey||e.ctrlKey))){e.preventDefault();redo();}
+      else if(e.code==='KeyZ'&&(e.metaKey||e.ctrlKey)){e.preventDefault();undo();}
       else if(e.code==='KeyT')tapTempo();
       else if(e.code==='Escape')panicEngine();
     };
@@ -2389,7 +2513,7 @@ export default function App(){
         grooveProfile={grooveProfile} setGrooveProfile={v=>{setGrooveProfile(v);grooveProfileRef.current=v;}}
         regenerateSection={regenerateSection}
         currentSectionName={currentSectionName}
-        undoLen={undoLen} undo={undo}
+        undoLen={undoLen} redoLen={redoLen} undo={undo} redo={redo}
         recState={recState} startRec={startRec} stopRec={stopRec}
         recordings={recordings}
         exportJSON={exportJSON} importRef={importRef} importJSON={importJSON}
@@ -2409,7 +2533,8 @@ export default function App(){
       {view==='song'&&<SongView
         genre={genre} gc={gc_}
         songArc={songArc} arcIdx={arcIdx} songActive={songActive}
-        startSongArc={startSongArc} stopSongArc={stopSongArc}
+        startSongArc={startSongArc} stopSongArc={stopSongArc} armSongArc={armSongArc}
+        selectedArcIdx={selectedArcIdx} SONG_ARC_NAMES={SONG_ARC_NAMES}
         currentSectionName={currentSectionName}
         SONG_ARCS={SONG_ARCS} SECTIONS={SECTIONS}
         triggerSection={triggerSection}
@@ -2655,7 +2780,7 @@ function PresetSelect({label,value,options,onChange,accent='#ffffff',compact=fal
 // ─────────────────────────────────────────────────────────────────────────────
 // STUDIO VIEW — detailed editor
 // ─────────────────────────────────────────────────────────────────────────────
-function StudioView({genre,gc,patterns,bassLine,synthLine,laneLen,step,page,setPage,toggleCell,setNote,modeName,laneVU,space,setSpace,tone,setTone,noiseMix,setNoiseMix,drive,setDrive,compress,setCompress,bassFilter,setBassFilter,synthFilter,setSynthFilter,drumDecay,setDrumDecay,bassSubAmt,setBassSubAmt,fmIdx,setFmIdx,master,setMaster,swing,setSwing,humanize,setHumanize,grooveAmt,setGrooveAmt,grooveProfile,setGrooveProfile,regenerateSection,currentSectionName,undoLen,undo,recState,startRec,stopRec,recordings,exportJSON,importRef,importJSON,savedScenes,saveScene,loadScene,projectName,setProjectName,clearPattern,polySynth,setPolySynth,bassStack,setBassStack,bassPreset,synthPreset,drumPreset,performancePreset,applyBassPreset,applySynthPreset,applyDrumPreset,applyPerformancePreset,laneVolume,setLaneVolume,laneProbability,setLaneProbability,synthChordChance,setSynthChordChance,synthHold,setSynthHold,synthCurve,setSynthCurve,compact,phone}){
+function StudioView({genre,gc,patterns,bassLine,synthLine,laneLen,step,page,setPage,toggleCell,setNote,modeName,laneVU,space,setSpace,tone,setTone,noiseMix,setNoiseMix,drive,setDrive,compress,setCompress,bassFilter,setBassFilter,synthFilter,setSynthFilter,drumDecay,setDrumDecay,bassSubAmt,setBassSubAmt,fmIdx,setFmIdx,master,setMaster,swing,setSwing,humanize,setHumanize,grooveAmt,setGrooveAmt,grooveProfile,setGrooveProfile,regenerateSection,currentSectionName,undoLen,redoLen,undo,redo,recState,startRec,stopRec,recordings,exportJSON,importRef,importJSON,savedScenes,saveScene,loadScene,projectName,setProjectName,clearPattern,polySynth,setPolySynth,bassStack,setBassStack,bassPreset,synthPreset,drumPreset,performancePreset,applyBassPreset,applySynthPreset,applyDrumPreset,applyPerformancePreset,laneVolume,setLaneVolume,laneProbability,setLaneProbability,synthChordChance,setSynthChordChance,synthHold,setSynthHold,synthCurve,setSynthCurve,compact,phone}){
   const [tab,setTab]=useState('mixer');
   const [noteEditLane,setNoteEditLane]=useState('bass');
   const visibleStart=page*16,visibleEnd=Math.min(visibleStart+16,MAX_STEPS);
@@ -2673,6 +2798,7 @@ function StudioView({genre,gc,patterns,bassLine,synthLine,laneLen,step,page,setP
           <span style={{fontSize:7.75,color:'rgba(255,255,255,0.95)',letterSpacing:'0.1em'}}>{genre.toUpperCase()} · {modeName.toUpperCase()} · {currentSectionName.toUpperCase()}</span>
           <div style={{flex:1}}/>
           <button onClick={undo} disabled={undoLen===0} style={{...navBtn,opacity:undoLen>0?1:0.3,fontSize:7.75}}>↩ ({undoLen})</button>
+          <button onClick={redo} disabled={redoLen===0} style={{...navBtn,opacity:redoLen>0?1:0.3,fontSize:7.75}}>↪ ({redoLen})</button>
           <button onClick={()=>setPage(p=>Math.max(0,p-1))} disabled={page===0} style={{...navBtn,opacity:page===0?0.3:1}}>‹</button>
           <span style={{fontSize:7.75,color:'rgba(255,255,255,0.92)',fontFamily:'Space Mono,monospace'}}>pg {page+1}/4</span>
           <button onClick={()=>setPage(p=>Math.min(3,p+1))} disabled={page===3} style={{...navBtn,opacity:page===3?0.3:1}}>›</button>
@@ -2894,7 +3020,7 @@ function StudioView({genre,gc,patterns,bassLine,synthLine,laneLen,step,page,setP
               A=drop S=break D=build<br/>
               F=groove G=tension H=fill<br/>
               M=mutate R=regen P=autopilot<br/>
-              T=tap tempo Z=undo ESC=panic
+              T=tap tempo Z=undo · SHIFT+Z / Y=redo ESC=panic
             </div>
           </>}
         </div>
@@ -2906,7 +3032,7 @@ function StudioView({genre,gc,patterns,bassLine,synthLine,laneLen,step,page,setP
 // ─────────────────────────────────────────────────────────────────────────────
 // SONG VIEW — arc composer and arrangement
 // ─────────────────────────────────────────────────────────────────────────────
-function SongView({genre,gc,songArc,arcIdx,songActive,startSongArc,stopSongArc,currentSectionName,SONG_ARCS,SECTIONS,triggerSection,modeName,arpeMode,bpm,compact,phone}){
+function SongView({genre,gc,songArc,arcIdx,songActive,startSongArc,stopSongArc,armSongArc,selectedArcIdx,SONG_ARC_NAMES,currentSectionName,SONG_ARCS,SECTIONS,triggerSection,modeName,arpeMode,bpm,compact,phone}){
   const SECTION_COLORS={drop:'#ff2244',break:'#4488ff',build:'#ffaa00',groove:'#00cc66',tension:'#ff6622',fill:'#cc00ff',intro:'#44ffcc',outro:'#aaaaaa'};
   const gd=GENRES[genre];
 
@@ -2971,16 +3097,21 @@ function SongView({genre,gc,songArc,arcIdx,songActive,startSongArc,stopSongArc,c
 
         {/* Preset arcs */}
         <div style={{fontSize:7.75,color:'rgba(255,255,255,0.92)',letterSpacing:'0.15em',textTransform:'uppercase',marginTop:4}}>PRESET ARCS</div>
-        {SONG_ARCS.map((arc,i)=>(
-          <button key={i} onClick={()=>{}} style={{
-            padding:'8px 10px',borderRadius:4,border:'1px solid rgba(255,255,255,0.08)',
-            background:'rgba(255,255,255,0.02)',color:'rgba(255,255,255,0.97)',
-            fontSize:7.75,cursor:'pointer',fontFamily:'Space Mono,monospace',textAlign:'left',
-            letterSpacing:'0.04em',lineHeight:1.4,
-          }}>
-            {arc.join(' → ')}
-          </button>
-        ))}
+        {SONG_ARCS.map((arc,i)=>{
+          const isSelected=selectedArcIdx===i;
+          return(
+            <button key={i} onClick={()=>armSongArc(i)} style={{
+              padding:'8px 10px',borderRadius:4,border:`1px solid ${isSelected?gc:'rgba(255,255,255,0.08)'}`,
+              background:isSelected?`${gc}12`:'rgba(255,255,255,0.02)',color:'rgba(255,255,255,0.97)',
+              fontSize:7.75,cursor:'pointer',fontFamily:'Space Mono,monospace',textAlign:'left',
+              letterSpacing:'0.04em',lineHeight:1.4,
+              boxShadow:isSelected?`0 0 12px ${gc}22`:'none',
+            }}>
+              <div style={{fontSize:6.75,color:isSelected?gc:'rgba(255,255,255,0.86)',letterSpacing:'0.14em',textTransform:'uppercase',marginBottom:3}}>{SONG_ARC_NAMES[i]||`Preset ${i+1}`}</div>
+              {arc.join(' → ')}
+            </button>
+          );
+        })}
       </div>
 
       {/* RIGHT — Section library + direct trigger */}
