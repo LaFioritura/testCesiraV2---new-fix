@@ -1,0 +1,24 @@
+CESIRA — STRABILIANTE UPGRADE
+
+Cosa è stato potenziato in questa build:
+
+1) Composizione musicale
+- blueprint compositivo ora guidato anche da banche ritmiche, temi e risposte specifiche per genere
+- linee bass e synth rifinite con controllo salti, cadenze, ripetizioni e maggiore coerenza fraseologica
+- interplay basso/synth migliorato: separazione di registro, cadenzamento più forte, accordi più intelligenti nei punti chiave
+- maggiore polifonia reale nei generi che la richiedono (house, ambient, cinematic, ecc.)
+
+2) Identità sonora
+- nuovi preset bass: MIDNIGHT REESE, RUBBER PLUCK, SILO WEIGHT
+- nuovi preset synth: ORBITAL SUPER, IVORY PLUCK, HYBRID GLOW, SCENE PRISM
+- nuovi preset drum: ACID PLATE, JUNGLE FOIL, CINEMA SMOKE
+- nuove modalità di sintesi introdotte nel motore: reese, pluck, supersaw, hybrid
+
+3) Coerenza per genere
+- bundle preset di default per ogni genere, caricati automaticamente nelle nuove sessioni
+- variazioni runtime dei drums rese più specifiche per house / acid / dnb / industrial / techno
+
+4) Compatibilità
+- estetica non ridisegnata
+- build pronta per Vercel rigenerata con successo
+- storage/session version aggiornata per evitare collisioni con salvataggi vecchi
