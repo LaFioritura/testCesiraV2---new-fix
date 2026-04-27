@@ -1,0 +1,30 @@
+CESIRA — MAJOR COMPOSER UPGRADE
+
+This build keeps the existing UI direction and function set while upgrading three deep areas:
+
+1) COMPOSITION BRAIN
+- Added section plans per song section (intro/build/drop/groove/break/tension/fill/outro)
+- Added motif families: statement, answer, climb, climax, cadence, release
+- Added section-specific progression shaping (pedal, rising, dominant, turnaround, falling, groove)
+- BuildSection now uses section plans and shaped progressions instead of one flat harmonic behavior everywhere
+- BuildMelodicLine now pulls from motif families and section phrase roles, so phrases recur and transform more deliberately
+
+2) SOUND VARIETY
+- New bass modes/presets added, including harmonic/formant-style bass colors
+- New synth modes/presets added, including brass and shimmer families
+- Stronger genre preset defaults for house, dnb, cinematic
+- More genre-aware drum runtime variation for ambient/cinematic contexts
+
+3) MUSICAL BEHAVIOR / POLYPHONY
+- Section chord style preference now informs poly voicings more directly
+- Narrative sections steer voicing/chord choices more clearly
+- Better distinction between statement, response, climax and release behavior
+
+TECHNICAL
+- Session storage/version bumped to v10 / cesira-session-v9
+- Production build regenerated successfully with Vite
+
+HONEST NOTE
+- This build has passed compile/build validation.
+- It has NOT been audited by human listening in a studio environment from inside this container.
+- So the upgrade is real in code and structure, but final artistic judgment still depends on your ear once you run it.

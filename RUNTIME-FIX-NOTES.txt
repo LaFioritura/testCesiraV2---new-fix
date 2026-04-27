@@ -1,0 +1,11 @@
+Runtime fix pass applied after crash report.
+
+Fixed:
+- crash in Perform view caused by calling .replace() on synth chord arrays
+- safer note rendering for monophonic and polyphonic steps
+- Studio note editor now derives root note safely from chord steps
+- session restore/import version gate now accepts current session version again
+- inline favicon added to remove favicon 404 in deploys
+
+Not an app bug:
+- "No Listener: tabs:outgoing.message.ready" comes from a browser extension, not from the app bundle
