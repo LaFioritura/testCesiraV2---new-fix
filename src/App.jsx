@@ -392,6 +392,17 @@ const transposeNote=(note,semitones)=>{
   const nextOct=Math.floor(abs/12);
   return `${CHROMA[nextIdx]}${nextOct}`;
 };
+const noteValueToDisplay=value=>{
+  if(Array.isArray(value))return value.map(noteValueToDisplay).filter(Boolean).join('/');
+  if(value===null||value===undefined)return '';
+  if(typeof value==='number')return String(value);
+  if(typeof value==='string')return value.replace(/b/g,'♭').replace(/#/g,'♯');
+  if(typeof value==='object'){
+    if(typeof value.note==='string')return noteValueToDisplay(value.note);
+    if(Array.isArray(value.notes))return noteValueToDisplay(value.notes);
+  }
+  return String(value);
+};
 
 const mkSteps=()=>Array.from({length:MAX_STEPS},()=>({on:false,p:1,v:1,l:1}));
 const mkNotes=(d='C2')=>Array.from({length:MAX_STEPS},()=>d);
