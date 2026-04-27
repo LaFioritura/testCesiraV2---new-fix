@@ -6,8 +6,9 @@ import React,{useCallback,useEffect,useRef,useState}from'react';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MAX_STEPS=64,PAGE=16,SCHED=0.14,LOOK=20,UNDO=32,REDO=32;
-const SESSION_STORAGE_KEY='cesira-session-v9';
-const SESSION_PAYLOAD_VERSION=10;
+const SESSION_STORAGE_KEY='cesira-session-v10';
+const SOUND_PRESET_STORAGE_KEY='cesira-custom-presets-v1';
+const SESSION_PAYLOAD_VERSION=11;
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
 const rnd=()=>Math.random();
 const pick=a=>a[Math.floor(rnd()*a.length)];
@@ -34,6 +35,10 @@ const GENRE_FAMILY_PROFILES={
   cinematic:{drive:-0.03,tone:0.1,space:0.12,motion:0.04,accent:0.01,hookBias:0.56,fillBias:'swell',bassRole:'pedal',synthRole:'theme'},
 };
 const getGenreFamilyProfile=genre=>GENRE_FAMILY_PROFILES[genre]||GENRE_FAMILY_PROFILES.techno;
+
+const defaultCustomPresetBank=()=>({bass:{},synth:{},drum:{}});
+const slugifyPresetLabel=value=>String(value||'preset').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'').slice(0,24)||'preset';
+const buildPresetOptionMap=(kind,customPresetBank)=>({...SOUND_PRESETS[kind],...((customPresetBank&&customPresetBank[kind])||{})});
 
 
 const GENRE_NARRATIVE_PROFILES={
@@ -421,6 +426,47 @@ const noteValueRoot=value=>{
     if(typeof value.label==='string')return value.label.split('/')[0]||value.label;
   }
   return '';
+};
+
+const rebuildNoteValueFromRoot=(value,newRoot)=>{
+  if(!newRoot)return value;
+  const root=noteValueRoot(value);
+  if(!root)return Array.isArray(value)?[newRoot]:newRoot;
+  if(Array.isArray(value)){
+    const rootMidi=NOTE_MIDI[root]??NOTE_MIDI[newRoot]??60;
+    return value.map(entry=>{
+      const entryRoot=noteValueRoot(entry);
+      if(!entryRoot)return entry;
+      const entryMidi=NOTE_MIDI[entryRoot]??rootMidi;
+      return transposeNote(newRoot,entryMidi-rootMidi);
+    });
+  }
+  if(value&&typeof value==='object'){
+    if(Array.isArray(value.notes))return {...value,notes:rebuildNoteValueFromRoot(value.notes,newRoot)};
+    if(typeof value.note==='string')return {...value,note:newRoot};
+  }
+  return newRoot;
+};
+
+const randomizeNoteValue=(value,pool,{allowChord=false}={})=>{
+  if(!Array.isArray(pool)||!pool.length)return value;
+  const currentRoot=noteValueRoot(value);
+  const currentIdx=currentRoot?pool.indexOf(currentRoot):-1;
+  const center=currentIdx>=0?currentIdx:Math.floor(pool.length*0.5);
+  const radius=allowChord?3:2;
+  const from=Math.max(0,center-radius);
+  const to=Math.min(pool.length,center+radius+1);
+  const local=pool.slice(from,to);
+  const nextRoot=pick(local.length?local:pool);
+  return rebuildNoteValueFromRoot(value,nextRoot);
+};
+
+const shiftNoteValue=(value,pool,dir=1)=>{
+  if(!Array.isArray(pool)||!pool.length)return value;
+  const root=noteValueRoot(value);
+  const idx=root?pool.indexOf(root):-1;
+  const nextRoot=pool[clamp((idx>=0?idx:0)+dir,0,pool.length-1)]||root||value;
+  return rebuildNoteValueFromRoot(value,nextRoot);
 };
 
 const mkSteps=()=>Array.from({length:MAX_STEPS},()=>({on:false,p:1,v:1,l:1}));
@@ -1378,6 +1424,59 @@ const GENRE_CLR={
 };
 
 
+const createForgedPreset=(kind,spec={},genre='techno')=>{
+  const brightness=clamp(Number(spec.brightness??0.56),0,1);
+  const body=clamp(Number(spec.body??0.58),0,1);
+  const attack=clamp(Number(spec.attack??0.42),0,1);
+  const width=clamp(Number(spec.width??0.54),0,1);
+  const motion=clamp(Number(spec.motion??0.46),0,1);
+  const grit=clamp(Number(spec.grit??0.24),0,1);
+  const air=clamp(Number(spec.air??0.5),0,1);
+  const tag=(spec.name||`${kind} forge`).trim().slice(0,24)||`${kind} forge`;
+  if(kind==='bass'){
+    const bassMode = grit>0.72 ? 'fold' : width>0.68 ? 'reese' : attack>0.66 ? 'pluck' : body>0.72 ? 'harmonic' : brightness<0.34 ? 'drone' : 'pulse';
+    return {
+      label:`${tag.toUpperCase()}`,bassMode,genre,
+      bassFilter:clamp(0.28+brightness*0.54,0.18,0.9),
+      bassSubAmt:clamp(0.2+body*0.78,0.12,1),
+      drive:clamp(0.04+grit*0.52,0.02,0.64),
+      compress:clamp(0.12+body*0.26+grit*0.1,0.08,0.52),
+      tone:clamp(0.22+brightness*0.6+air*0.08,0.16,0.96),
+      bassDetune:clamp(0.002+width*0.028,0.002,0.032),
+      bassMotion:clamp(0.1+motion*0.86,0.08,0.96),
+      bassPunch:clamp(0.2+attack*0.7+grit*0.08,0.18,0.96),
+      fmIdx:clamp(0.24+grit*1.28+brightness*0.18,0.12,2.4),
+    };
+  }
+  if(kind==='drum'){
+    return {
+      label:`${tag.toUpperCase()}`,genre,
+      drumDecay:clamp(0.18+body*0.42+air*0.12,0.14,0.78),
+      noiseMix:clamp(0.06+air*0.24+grit*0.18,0.02,0.56),
+      compress:clamp(0.12+attack*0.18+body*0.12,0.08,0.46),
+      drive:clamp(0.04+grit*0.34,0.02,0.42),
+      tone:clamp(0.32+brightness*0.52,0.2,0.96),
+      kickTone:clamp(0.36+body*0.46+attack*0.14,0.2,0.94),
+      snareTone:clamp(0.34+brightness*0.3+grit*0.18+air*0.08,0.22,0.94),
+      hatTone:clamp(0.48+brightness*0.42+air*0.14,0.32,1),
+      hatOpenChance:clamp(0.06+width*0.18+air*0.08,0.04,0.32),
+    };
+  }
+  const synthMode = grit>0.72 ? 'hybrid' : air>0.76 ? 'shimmer' : body>0.72 && width>0.54 ? 'brass' : width>0.72 ? 'supersaw' : attack>0.66 ? 'pluck' : brightness<0.32 ? 'strings' : 'pad';
+  return {
+    label:`${tag.toUpperCase()}`,synthMode,genre,
+    synthFilter:clamp(0.3+brightness*0.58+air*0.06,0.22,0.96),
+    space:clamp(0.18+width*0.48+air*0.24,0.14,0.96),
+    tone:clamp(0.24+brightness*0.62,0.16,0.98),
+    drive:clamp(0.02+grit*0.26,0.01,0.38),
+    polySynth:width>0.32,
+    synthDetune:clamp(0.003+width*0.022,0.003,0.028),
+    synthMotion:clamp(0.08+motion*0.78,0.06,0.96),
+    synthPunch:clamp(0.18+attack*0.62+grit*0.06,0.14,0.96),
+    fmIdx:clamp(0.26+grit*0.86+motion*0.12,0.18,1.8),
+  };
+};
+
 const SOUND_PRESETS={
   bass:{
     sub_floor:{label:'SUB FLOOR',bassMode:'sub',bassFilter:0.38,bassSubAmt:0.92,drive:0.06,compress:0.24,tone:0.48,bassDetune:0.004,bassMotion:0.18,bassPunch:0.52},
@@ -1532,8 +1631,12 @@ export default function App(){
 
   // ── Song state
   const [genre,setGenre]=useState('techno');
+  const genreRef=useRef('techno');
+  useEffect(()=>{genreRef.current=genre;},[genre]);
   const [currentSectionName,setCurrentSectionName]=useState('groove');
   const [modeName,setModeName]=useState('minor');
+  const modeNameRef=useRef('minor');
+  useEffect(()=>{modeNameRef.current=modeName;},[modeName]);
   const [songArc,setSongArc]=useState([]);
   const [selectedArcIdx,setSelectedArcIdx]=useState(0);
   const selectedArcIdxRef=useRef(0);
@@ -1611,18 +1714,18 @@ export default function App(){
       if(!preset)return;
       if(preset.bassMode)GENRES[genreKey]={...GENRES[genreKey],bassMode:preset.bassMode};
       if(preset.synthMode)GENRES[genreKey]={...GENRES[genreKey],synthMode:preset.synthMode};
-      if(preset.space!==undefined)setSpace(preset.space);
-      if(preset.tone!==undefined)setTone(preset.tone);
-      if(preset.drive!==undefined)setDrive(preset.drive);
-      if(preset.compress!==undefined)setCompress(preset.compress);
-      if(preset.noiseMix!==undefined)setNoiseMix(preset.noiseMix);
-      if(preset.drumDecay!==undefined)setDrumDecay(preset.drumDecay);
-      if(preset.bassFilter!==undefined)setBassFilter(preset.bassFilter);
-      if(preset.synthFilter!==undefined)setSynthFilter(preset.synthFilter);
-      if(preset.bassSubAmt!==undefined)setBassSubAmt(preset.bassSubAmt);
+      if(preset.space!==undefined){setSpace(preset.space);spaceRef.current=preset.space;}
+      if(preset.tone!==undefined){setTone(preset.tone);toneRef.current=preset.tone;}
+      if(preset.drive!==undefined){setDrive(preset.drive);driveRef.current=preset.drive;}
+      if(preset.compress!==undefined){setCompress(preset.compress);compressRef.current=preset.compress;}
+      if(preset.noiseMix!==undefined){setNoiseMix(preset.noiseMix);noiseMixRef.current=preset.noiseMix;}
+      if(preset.drumDecay!==undefined){setDrumDecay(preset.drumDecay);drumDecayRef.current=preset.drumDecay;}
+      if(preset.bassFilter!==undefined){setBassFilter(preset.bassFilter);bassFilterRef.current=preset.bassFilter;}
+      if(preset.synthFilter!==undefined){setSynthFilter(preset.synthFilter);synthFilterRef.current=preset.synthFilter;}
+      if(preset.bassSubAmt!==undefined){setBassSubAmt(preset.bassSubAmt);bassSubAmtRef.current=preset.bassSubAmt;}
       if(preset.fmIdx!==undefined){setFmIdx(preset.fmIdx);fmIdxRef.current=preset.fmIdx;}
-      if(preset.polySynth!==undefined)setPolySynth(preset.polySynth);
-      if(preset.bassStack!==undefined)setBassStack(preset.bassStack);
+      if(preset.polySynth!==undefined){setPolySynth(preset.polySynth);polySynthRef.current=preset.polySynth;}
+      if(preset.bassStack!==undefined){setBassStack(preset.bassStack);bassStackRef.current=preset.bassStack;}
       if(preset.grooveAmt!==undefined){setGrooveAmt(preset.grooveAmt);grooveRef.current=preset.grooveAmt;}
       if(preset.swing!==undefined){setSwing(preset.swing);swingRef.current=preset.swing;}
     };
@@ -1686,6 +1789,19 @@ export default function App(){
   const chunksRef=useRef([]);
   const [projectName,setProjectName]=useState('CESIRA SESSION');
   const [savedScenes,setSavedScenes]=useState([null,null,null,null,null,null]);
+  useEffect(()=>{
+    try{
+      const raw=window.localStorage.getItem(SOUND_PRESET_STORAGE_KEY);
+      if(!raw)return;
+      const parsed=JSON.parse(raw);
+      const next={...defaultCustomPresetBank(),...(parsed||{})};
+      setCustomPresetBank(next);
+      customPresetBankRef.current=next;
+    }catch{}
+  },[]);
+  useEffect(()=>{
+    try{window.localStorage.setItem(SOUND_PRESET_STORAGE_KEY,JSON.stringify(customPresetBank));}catch{}
+  },[customPresetBank]);
   const didHydrateRef=useRef(false);
   const persistTimerRef=useRef(null);
   const [midiOk,setMidiOk]=useState(false);
@@ -1778,21 +1894,26 @@ export default function App(){
   const applyFxNow=()=>{
     const a=audioRef.current;if(!a)return;
     const now=a.ctx.currentTime;
-    const gd=GENRES[genre];const fx=gd.fxProfile;
-    driveCurve(a.preD,clamp(fx.drive*0.4+drive*0.1,0,0.38));
-    a.toneF.frequency.linearRampToValueAtTime(clamp(1800+12000*fx.tone*tone,600,19000),now+0.08);
-    a.lDly.delayTime.linearRampToValueAtTime(clamp(0.02+space*0.08,0.01,0.45),now+0.08);
-    a.rDly.delayTime.linearRampToValueAtTime(clamp(0.03+space*0.1,0.01,0.45),now+0.08);
-    a.fb.gain.linearRampToValueAtTime(clamp(0.06+space*0.2,0.03,0.4),now+0.08);
-    a.wet.gain.linearRampToValueAtTime(clamp(space*0.18,0,0.25),now+0.08);
-    a.dry.gain.linearRampToValueAtTime(clamp(0.95-space*0.08,0.72,0.97),now+0.08);
-    a.chorus.gain.linearRampToValueAtTime(clamp(space*0.08,0,0.14),now+0.12);
-    a.revW.gain.linearRampToValueAtTime(clamp(fx.space*space*0.22,0,0.28),now+0.14);
-    a.comp.attack.value=clamp(0.006+compress*0.012,0.004,0.03);
-    a.comp.release.value=clamp(0.16+space*0.2+compress*0.12,0.12,0.42);
+    const runtimeGenre=genreRef.current||genre;
+    const gd=GENRES[runtimeGenre]||GENRES.techno;const fx=gd.fxProfile;
+    const rtDrive=driveRef.current;
+    const rtTone=toneRef.current;
+    const rtSpace=spaceRef.current;
+    const rtCompress=compressRef.current;
+    driveCurve(a.preD,clamp(fx.drive*0.4+rtDrive*0.1,0,0.38));
+    a.toneF.frequency.linearRampToValueAtTime(clamp(1800+12000*fx.tone*rtTone,600,19000),now+0.08);
+    a.lDly.delayTime.linearRampToValueAtTime(clamp(0.02+rtSpace*0.08,0.01,0.45),now+0.08);
+    a.rDly.delayTime.linearRampToValueAtTime(clamp(0.03+rtSpace*0.1,0.01,0.45),now+0.08);
+    a.fb.gain.linearRampToValueAtTime(clamp(0.06+rtSpace*0.2,0.03,0.4),now+0.08);
+    a.wet.gain.linearRampToValueAtTime(clamp(rtSpace*0.18,0,0.25),now+0.08);
+    a.dry.gain.linearRampToValueAtTime(clamp(0.95-rtSpace*0.08,0.72,0.97),now+0.08);
+    a.chorus.gain.linearRampToValueAtTime(clamp(rtSpace*0.08,0,0.14),now+0.12);
+    a.revW.gain.linearRampToValueAtTime(clamp(fx.space*rtSpace*0.22,0,0.28),now+0.14);
+    a.comp.attack.value=clamp(0.006+rtCompress*0.012,0.004,0.03);
+    a.comp.release.value=clamp(0.16+rtSpace*0.2+rtCompress*0.12,0.12,0.42);
     a.out.gain.linearRampToValueAtTime(master,now+0.06);
-    a.comp.threshold.value=clamp(-20-compress*12,-32,-6);
-    a.comp.ratio.value=clamp(2+compress*5,1.5,8);
+    a.comp.threshold.value=clamp(-20-rtCompress*12,-32,-6);
+    a.comp.ratio.value=clamp(2+rtCompress*5,1.5,8);
   };
   useEffect(()=>{if(audioRef.current)applyFxNow();},[space,tone,drive,compress,master,genre]);
 
@@ -1898,7 +2019,7 @@ export default function App(){
   const duckMixFromKick=(accent,t)=>{
     const bassGain=laneGains.current.bass;
     const synthGain=laneGains.current.synth;
-    const duckAmt=clamp(0.84-(accent*0.12+compress*0.05),0.66,0.9);
+    const duckAmt=clamp(0.84-(accent*0.12+compressRef.current*0.05),0.66,0.9);
     [['bass',bassGain],['synth',synthGain]].forEach(([lane,g],idx)=>{
       if(!g)return;
       const release=idx===0?0.12:0.18;
@@ -1915,14 +2036,15 @@ export default function App(){
   // ─── DRUM SYNTHESIS ────────────────────────────────────────────────────────
   const playKick=(accent,t,variation={})=>{
     if(!nodeGuard())return;
-    const a=audioRef.current;const gd=GENRES[genre];
+    const a=audioRef.current;const runtimeGenre=genreRef.current||genre;const gd=GENRES[runtimeGenre]||GENRES.techno;
     const charCfg=getCharacterConfig(soundCharacterRef.current);
     const energy=compositionEnergyRef.current;
     const kickTone=clamp((drumPresetCfg.kickTone??0.6)+charCfg.toneBias*0.5+(variation.toneShift||0)+(variation.variantBias||0)+energy*0.04,0.2,1);
     const kf=gd.kickFreq||90,ke=gd.kickEnd||35;
     const startFreq=clamp(kf*(0.92+kickTone*0.4),45,140);
     const endFreq=clamp(ke*(0.8+kickTone*0.45),20,70);
-    const et=0.06+drumDecay*0.14+(1-kickTone)*0.03+Math.max(-0.015,(variation.decayShift||0)*0.03),dt=0.13+drumDecay*0.24+(1-kickTone)*0.04+Math.max(-0.03,(variation.decayShift||0)*0.05);
+    const rtDrumDecay=drumDecayRef.current; const rtTone=toneRef.current; const rtNoise=noiseMixRef.current; const rtDrive=driveRef.current; const rtBassSub=bassSubAmtRef.current;
+    const et=0.06+rtDrumDecay*0.14+(1-kickTone)*0.03+Math.max(-0.015,(variation.decayShift||0)*0.03),dt=0.13+rtDrumDecay*0.24+(1-kickTone)*0.04+Math.max(-0.03,(variation.decayShift||0)*0.05);
     const body=a.ctx.createOscillator(),bG=a.ctx.createGain();
     const punch=a.ctx.createOscillator(),pG=a.ctx.createGain();
     const sub=a.ctx.createOscillator(),sG=a.ctx.createGain();
@@ -1935,11 +2057,11 @@ export default function App(){
     sub.type='sine';sub.frequency.setValueAtTime(startFreq*0.5,t);sub.frequency.exponentialRampToValueAtTime(Math.max(18,endFreq*0.5),t+et*1.05);
     const cb=a.ctx.createBuffer(1,Math.floor(a.ctx.sampleRate*0.0045),a.ctx.sampleRate);
     const cd=cb.getChannelData(0);for(let i=0;i<cd.length;i++)cd[i]=(rnd()*2-1)*(1-i/cd.length);
-    click.buffer=cb;bodyF.type='lowpass';bodyF.frequency.value=clamp(500+kickTone*1800+(tone+charCfg.toneBias)*400+energy*160,280,3600);driveCurve(sh,0.08+(noiseMix+charCfg.noiseBias)*0.08+(drive+charCfg.driveBias)*0.05+kickTone*0.08+energy*0.02);
+    click.buffer=cb;bodyF.type='lowpass';bodyF.frequency.value=clamp(500+kickTone*1800+(rtTone+charCfg.toneBias)*400+energy*160,280,3600);driveCurve(sh,0.08+(rtNoise+charCfg.noiseBias)*0.08+(rtDrive+charCfg.driveBias)*0.05+kickTone*0.08+energy*0.02);
     bG.gain.setValueAtTime(0,t);bG.gain.linearRampToValueAtTime((0.66+kickTone*0.22)*accent,t+0.0012);bG.gain.exponentialRampToValueAtTime(0.001,t+dt);
     pG.gain.setValueAtTime(0,t);pG.gain.linearRampToValueAtTime((0.08+kickTone*0.18)*accent,t+0.0008);pG.gain.exponentialRampToValueAtTime(0.001,t+Math.max(0.022,dt*0.28));
-    sG.gain.setValueAtTime(0,t);sG.gain.linearRampToValueAtTime((0.26+bassSubAmt*0.42)*(1-kickTone*0.2)*accent,t+0.001);sG.gain.exponentialRampToValueAtTime(0.001,t+dt*1.25);
-    cG.gain.setValueAtTime(0,t);cG.gain.linearRampToValueAtTime((0.1+kickTone*0.26+noiseMix*0.1)*accent,t+0.0005);cG.gain.exponentialRampToValueAtTime(0.001,t+0.0048+kickTone*0.003);
+    sG.gain.setValueAtTime(0,t);sG.gain.linearRampToValueAtTime((0.26+rtBassSub*0.42)*(1-kickTone*0.2)*accent,t+0.001);sG.gain.exponentialRampToValueAtTime(0.001,t+dt*1.25);
+    cG.gain.setValueAtTime(0,t);cG.gain.linearRampToValueAtTime((0.1+kickTone*0.26+rtNoise*0.1)*accent,t+0.0005);cG.gain.exponentialRampToValueAtTime(0.001,t+0.0048+kickTone*0.003);
     body.connect(bodyF);bodyF.connect(sh);sh.connect(bG);punch.connect(pG);sub.connect(sG);click.connect(cG);
     bG.connect(mG);pG.connect(mG);sG.connect(mG);cG.connect(mG);
     const dest=getLaneGain('kick')||a.bus;mG.connect(dest);
@@ -1951,40 +2073,42 @@ export default function App(){
 
   const playSnare=(accent,t,variation={})=>{
     if(!nodeGuard())return;
-    const a=audioRef.current;const gd=GENRES[genre];
+    const a=audioRef.current;const runtimeGenre=genreRef.current||genre;const gd=GENRES[runtimeGenre]||GENRES.techno;
     const charCfg=getCharacterConfig(soundCharacterRef.current);
     const energy=compositionEnergyRef.current;
+    const rtDrumDecay=drumDecayRef.current; const rtNoise=noiseMixRef.current;
     const snareTone=clamp((drumPresetCfg.snareTone??0.6)+charCfg.toneBias*0.45+(variation.toneShift||0)+(variation.variantBias||0)+energy*0.03,0.18,1);
-    const nb=noiseBuffer(0.16+drumDecay*0.08+Math.max(-0.03,(variation.decayShift||0)*0.04),0.18+noiseMix*0.46+(variation.ghost?0.03:0),gd.noiseColor||'white');
+    const nb=noiseBuffer(0.16+rtDrumDecay*0.08+Math.max(-0.03,(variation.decayShift||0)*0.04),0.18+rtNoise*0.46+(variation.ghost?0.03:0),gd.noiseColor||'white');
     const src=a.ctx.createBufferSource(),fil=a.ctx.createBiquadFilter(),bp=a.ctx.createBiquadFilter(),snap=a.ctx.createBiquadFilter(),g=a.ctx.createGain();
     const osc=a.ctx.createOscillator(),og=a.ctx.createGain();
     const snapNoise=a.ctx.createBufferSource(),snapG=a.ctx.createGain();
-    const snapBuf=noiseBuffer(0.018+noiseMix*0.01,0.46,'white');
+    const snapBuf=noiseBuffer(0.018+rtNoise*0.01,0.46,'white');
     src.buffer=nb; snapNoise.buffer=snapBuf;
-    fil.type='bandpass';fil.frequency.value=1200+snareTone*1400+noiseMix*300;fil.Q.value=0.8+compress*0.5+(variation.variant?0.25:0);
+    fil.type='bandpass';fil.frequency.value=1200+snareTone*1400+rtNoise*300;fil.Q.value=0.8+compressRef.current*0.5+(variation.variant?0.25:0);
     bp.type='highpass';bp.frequency.value=clamp(180+snareTone*260,120,520);
     snap.type='bandpass';snap.frequency.value=clamp(2400+snareTone*1800+(variation.variant?320:0),1800,5200);snap.Q.value=1.1+(variation.ghost?0.2:0.5);
     osc.type=snareTone>0.64?'triangle':'sine';osc.frequency.value=clamp(150+snareTone*110,140,320);
-    og.gain.setValueAtTime(0,t);og.gain.linearRampToValueAtTime((0.06+snareTone*0.2)*(variation.ghost?0.55:1)*accent,t+0.001);og.gain.exponentialRampToValueAtTime(0.001,t+0.045+drumDecay*0.08);
-    snapG.gain.setValueAtTime(0,t);snapG.gain.linearRampToValueAtTime((0.08+snareTone*0.12+energy*0.04)*(variation.ghost?0.4:1)*accent,t+0.0007);snapG.gain.exponentialRampToValueAtTime(0.001,t+0.022+drumDecay*0.02);
-    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime((0.34+snareTone*0.24)*(variation.ghost?0.52:1)*accent,t+0.002);g.gain.exponentialRampToValueAtTime(0.001,t+0.05+drumDecay*0.13);
+    og.gain.setValueAtTime(0,t);og.gain.linearRampToValueAtTime((0.06+snareTone*0.2)*(variation.ghost?0.55:1)*accent,t+0.001);og.gain.exponentialRampToValueAtTime(0.001,t+0.045+rtDrumDecay*0.08);
+    snapG.gain.setValueAtTime(0,t);snapG.gain.linearRampToValueAtTime((0.08+snareTone*0.12+energy*0.04)*(variation.ghost?0.4:1)*accent,t+0.0007);snapG.gain.exponentialRampToValueAtTime(0.001,t+0.022+rtDrumDecay*0.02);
+    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime((0.34+snareTone*0.24)*(variation.ghost?0.52:1)*accent,t+0.002);g.gain.exponentialRampToValueAtTime(0.001,t+0.05+rtDrumDecay*0.13);
     src.connect(fil);fil.connect(bp);bp.connect(g);osc.connect(og);og.connect(g);snapNoise.connect(snap);snap.connect(snapG);snapG.connect(g);
     const dest=getLaneGain('snare')||a.bus;g.connect(dest);
-    gc(src,[fil,bp,snap,g,osc,og,snapNoise,snapG],520);ss(src,t);ss(osc,t);ss(snapNoise,t);st(src,t+0.2);st(osc,t+0.08+drumDecay*0.06);st(snapNoise,t+0.03);
+    gc(src,[fil,bp,snap,g,osc,og,snapNoise,snapG],520);ss(src,t);ss(osc,t);ss(snapNoise,t);st(src,t+0.2);st(osc,t+0.08+rtDrumDecay*0.06);st(snapNoise,t+0.03);
   };
 
   const playHat=(accent,t,open=false,variation={})=>{
     if(!nodeGuard())return;
-    const a=audioRef.current;const gd=GENRES[genre];
+    const a=audioRef.current;const runtimeGenre=genreRef.current||genre;const gd=GENRES[runtimeGenre]||GENRES.techno;
     const charCfg=getCharacterConfig(soundCharacterRef.current);
     const energy=compositionEnergyRef.current;
+    const rtDrumDecay=drumDecayRef.current; const rtNoise=noiseMixRef.current;
     const hatTone=clamp((drumPresetCfg.hatTone??0.8)+charCfg.toneBias*0.55+(variation.toneShift||0)+(variation.variantBias||0)+energy*0.02,0.22,1);
-    const nb=noiseBuffer(open?0.26+drumDecay*0.08+Math.max(-0.02,(variation.decayShift||0)*0.04):0.08+drumDecay*0.04+Math.max(-0.01,(variation.decayShift||0)*0.015),0.14+noiseMix*0.32+(variation.variant?0.02:0),gd.noiseColor||'white');
+    const nb=noiseBuffer(open?0.26+rtDrumDecay*0.08+Math.max(-0.02,(variation.decayShift||0)*0.04):0.08+rtDrumDecay*0.04+Math.max(-0.01,(variation.decayShift||0)*0.015),0.14+rtNoise*0.32+(variation.variant?0.02:0),gd.noiseColor||'white');
     const src=a.ctx.createBufferSource(),hp=a.ctx.createBiquadFilter(),bp=a.ctx.createBiquadFilter(),air=a.ctx.createBiquadFilter(),g=a.ctx.createGain();
     src.buffer=nb;hp.type='highpass';hp.frequency.value=open?clamp(5200+hatTone*2200,4200,9200):clamp(6800+hatTone*2400,5800,12000);
     bp.type='bandpass';bp.frequency.value=open?clamp(7600+hatTone*2600+(variation.variant?260:-120),6200,12000):clamp(9000+hatTone*2200+(variation.variant?-320:180),7600,14000);bp.Q.value=open?(variation.variant?0.75:0.9):(variation.variant?1.1:1.4);
     air.type='highshelf';air.frequency.value=clamp(7000+hatTone*3200,6200,15000);air.gain.value=variation.variant?2.8:1.8+energy*1.2;
-    const decay=open?0.05+drumDecay*0.22+hatTone*0.02:0.006+drumDecay*0.032+(1-hatTone)*0.01;
+    const decay=open?0.05+rtDrumDecay*0.22+hatTone*0.02:0.006+rtDrumDecay*0.032+(1-hatTone)*0.01;
     g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime((0.18+hatTone*0.18)*accent,t+0.0009);g.gain.exponentialRampToValueAtTime(0.001,t+decay);
     src.connect(hp);hp.connect(bp);bp.connect(air);air.connect(g);const dest=getLaneGain('hat')||a.bus;g.connect(dest);
     gc(src,[hp,bp,air,g],650);ss(src,t);st(src,t+(open?0.35:0.15));
@@ -1992,11 +2116,12 @@ export default function App(){
 
 
   const getVoiceNotes=(baseNote,lane='synth')=>{
-    const mode=MODES[modeName]||MODES.minor;
+    const runtimeMode=modeNameRef.current||modeName;
+    const mode=MODES[runtimeMode]||MODES.minor;
     const pool=lane==='bass'?mode.b:mode.s;
     const idx=pool.indexOf(baseNote);
     if(lane==='bass'){
-      if(!bassStack)return [baseNote];
+      if(!bassStackRef.current)return [baseNote];
       const fifth=idx>-1?pool[Math.min(idx+4,pool.length-1)]:transposeNote(baseNote,7);
       const octave=idx>-1?pool[Math.min(idx+7,pool.length-1)]:transposeNote(baseNote,12);
       const notes=[baseNote,fifth];
@@ -2004,10 +2129,10 @@ export default function App(){
       return [...new Set(notes.filter(Boolean))];
     }
     if(Array.isArray(baseNote))return baseNote;
-    if(!polySynth)return [baseNote];
-    const profile=compositionRef.current?.narrativeProfile||getGenreNarrativeProfile(genre);
+    if(!polySynthRef.current)return [baseNote];
+    const profile=compositionRef.current?.narrativeProfile||getGenreNarrativeProfile(genreRef.current||genre);
     const forcedStyle=compositionRef.current?.sectionPlans?.[currentSectionRef.current||'groove']?.chordStyle;
-    const style=forcedStyle||chooseChordStyle(currentSectionRef.current||'groove',genre,synthCurveRef.current||'balanced',profile);
+    const style=forcedStyle||chooseChordStyle(currentSectionRef.current||'groove',genreRef.current||genre,synthCurveRef.current||'balanced',profile);
     const voicing=getSynthChordVoicing(idx===-1?baseNote:pool[idx],pool,currentSectionRef.current||'groove',style,null,profile);
     return [...new Set((voicing&&voicing.length?voicing:[baseNote,transposeNote(baseNote,4),transposeNote(baseNote,7)]).filter(Boolean))];
   };
@@ -2020,32 +2145,35 @@ export default function App(){
     const dur=clamp(stepSec()*lenSteps*0.92,0.04,6);
     const atk=Math.min(0.008,dur*0.05);
     const rel=Math.max(0.04,dur*0.88);
-    const mode=bassPresetCfg.bassMode||GENRES[genre].bassMode||'sub';
+    const bassCfg=buildPresetOptionMap('bass',customPresetBankRef.current)[bassPresetRef.current]||getBassPresetCfg(bassPresetRef.current);
+    const runtimeGenre=genreRef.current||genre;
+    const mode=bassCfg.bassMode||(GENRES[runtimeGenre]||GENRES.techno).bassMode||'sub';
     const charCfg=getCharacterConfig(soundCharacterRef.current);
     const energy=compositionEnergyRef.current;
     const g=a.ctx.createGain(),fil=a.ctx.createBiquadFilter();
-    fil.type='lowpass';fil.frequency.setValueAtTime(60+(bassFilter+charCfg.bassFilterBias)*3000+(tone+charCfg.toneBias)*500+bassPresetCfg.bassPunch*500+energy*180,t);fil.frequency.linearRampToValueAtTime(clamp(110+(bassFilter+charCfg.bassFilterBias)*3600+(bassPresetCfg.bassMotion*540)+(tone+charCfg.toneBias)*380+energy*260,90,4200),t+Math.min(0.16,dur*0.34));fil.Q.value=0.45+compress*2.6+bassPresetCfg.bassMotion*1.2+energy*0.35;
-    const bassPeak=0.46+bassPresetCfg.bassPunch*0.22;
-    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(bassPeak*accent,t+atk);g.gain.setValueAtTime(bassPeak*accent,t+rel*(0.22+bassPresetCfg.bassPunch*0.18));g.gain.linearRampToValueAtTime((0.18+bassPresetCfg.bassPunch*0.08)*accent,t+rel*(0.56+bassPresetCfg.bassMotion*0.08));g.gain.exponentialRampToValueAtTime(0.0001,t+rel);
+    const rtBassFilter=bassFilterRef.current, rtTone=toneRef.current, rtCompress=compressRef.current, rtBassSub=bassSubAmtRef.current, rtDrive=driveRef.current;
+    fil.type='lowpass';fil.frequency.setValueAtTime(60+(rtBassFilter+charCfg.bassFilterBias)*3000+(rtTone+charCfg.toneBias)*500+bassCfg.bassPunch*500+energy*180,t);fil.frequency.linearRampToValueAtTime(clamp(110+(rtBassFilter+charCfg.bassFilterBias)*3600+(bassCfg.bassMotion*540)+(rtTone+charCfg.toneBias)*380+energy*260,90,4200),t+Math.min(0.16,dur*0.34));fil.Q.value=0.45+rtCompress*2.6+bassCfg.bassMotion*1.2+energy*0.35;
+    const bassPeak=0.46+bassCfg.bassPunch*0.22;
+    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(bassPeak*accent,t+atk);g.gain.setValueAtTime(bassPeak*accent,t+rel*(0.22+bassCfg.bassPunch*0.18));g.gain.linearRampToValueAtTime((0.18+bassCfg.bassPunch*0.08)*accent,t+rel*(0.56+bassCfg.bassMotion*0.08));g.gain.exponentialRampToValueAtTime(0.0001,t+rel);
     const cleanMs=(rel+0.3)*1000;
 
     if(mode==='fm'||mode==='bit'){
       const idx=fmIdxRef.current*(mode==='bit'?3:1.5);
       const car=a.ctx.createOscillator(),mod=a.ctx.createOscillator(),mg=a.ctx.createGain();
-      car.type='sine';car.frequency.value=f;mod.type='sine';mod.frequency.value=f*(mode==='fm'?2:3.2+bassPresetCfg.bassMotion*0.4);mg.gain.value=f*idx*(0.75+bassPresetCfg.bassPunch*0.35);
+      car.type='sine';car.frequency.value=f;mod.type='sine';mod.frequency.value=f*(mode==='fm'?2:3.2+bassCfg.bassMotion*0.4);mg.gain.value=f*idx*(0.75+bassCfg.bassPunch*0.35);
       const sub=a.ctx.createOscillator(),sg=a.ctx.createGain();
-      sub.type='sine';sub.frequency.value=f*0.5;sg.gain.value=bassSubAmt*0.4;
+      sub.type='sine';sub.frequency.value=f*0.5;sg.gain.value=rtBassSub*0.4;
       mod.connect(mg);mg.connect(car.frequency);car.connect(fil);sub.connect(sg);sg.connect(fil);fil.connect(g);
       const dest=getLaneGain('bass')||a.bus;g.connect(dest);trackNode(cleanMs);
       gc(car,[mod,mg,sub,sg,fil,g],cleanMs);
       ss(car,t);ss(mod,t);ss(sub,t);st(car,t+rel+0.05);st(mod,t+rel+0.05);st(sub,t+rel+0.05);
     } else if(mode==='fold'||mode==='wet'){
       const car=a.ctx.createOscillator(),ring=a.ctx.createOscillator(),rm=a.ctx.createGain();
-      car.type='sawtooth';car.frequency.value=f;ring.type='sine';ring.frequency.value=f*(mode==='fold'?1.35+bassPresetCfg.bassMotion*0.4:0.7+bassPresetCfg.bassMotion*0.2);
+      car.type='sawtooth';car.frequency.value=f;ring.type='sine';ring.frequency.value=f*(mode==='fold'?1.35+bassCfg.bassMotion*0.4:0.7+bassCfg.bassMotion*0.2);
       rm.gain.value=0.5;const rg=a.ctx.createGain();rg.gain.value=0;ring.connect(rg);rg.connect(rm.gain);
       car.connect(rm);rm.connect(fil);
       const sub=a.ctx.createOscillator(),sg=a.ctx.createGain();
-      sub.type='sine';sub.frequency.value=f*0.5;sg.gain.value=bassSubAmt*0.5;
+      sub.type='sine';sub.frequency.value=f*0.5;sg.gain.value=rtBassSub*0.5;
       sub.connect(sg);sg.connect(fil);fil.connect(g);
       const dest=getLaneGain('bass')||a.bus;g.connect(dest);trackNode(cleanMs);
       gc(car,[ring,rm,rg,sub,sg,fil,g],cleanMs);
@@ -2055,26 +2183,26 @@ export default function App(){
       const mix=a.ctx.createGain(),bp=a.ctx.createBiquadFilter(),sat=a.ctx.createWaveShaper(),motion=a.ctx.createOscillator(),mg=a.ctx.createGain();
       o1.type='triangle';o2.type='square';o3.type='sine';
       o1.frequency.value=f;o2.frequency.value=f*2;o3.frequency.value=f*1.5;
-      mix.gain.value=0.26;bp.type='bandpass';bp.frequency.value=220+(bassFilter+charCfg.bassFilterBias)*1800+(tone+charCfg.toneBias)*200;bp.Q.value=0.7+bassPresetCfg.bassPunch*2.1;
-      driveCurve(sat,clamp(0.16+drive*0.18+bassPresetCfg.bassPunch*0.1,0.08,0.46));
-      motion.frequency.value=0.18+bassPresetCfg.bassMotion*0.66;mg.gain.value=80+bassPresetCfg.bassMotion*180;
+      mix.gain.value=0.26;bp.type='bandpass';bp.frequency.value=220+(rtBassFilter+charCfg.bassFilterBias)*1800+(rtTone+charCfg.toneBias)*200;bp.Q.value=0.7+bassCfg.bassPunch*2.1;
+      driveCurve(sat,clamp(0.16+rtDrive*0.18+bassCfg.bassPunch*0.1,0.08,0.46));
+      motion.frequency.value=0.18+bassCfg.bassMotion*0.66;mg.gain.value=80+bassCfg.bassMotion*180;
       motion.connect(mg);mg.connect(bp.frequency);
       o1.connect(mix);o2.connect(mix);o3.connect(mix);mix.connect(bp);bp.connect(sat);sat.connect(fil);
-      const sub=a.ctx.createOscillator(),sg=a.ctx.createGain();sub.type='sine';sub.frequency.value=f*0.5;sg.gain.value=bassSubAmt*0.36;sub.connect(sg);sg.connect(fil);
+      const sub=a.ctx.createOscillator(),sg=a.ctx.createGain();sub.type='sine';sub.frequency.value=f*0.5;sg.gain.value=rtBassSub*0.36;sub.connect(sg);sg.connect(fil);
       fil.connect(g);
       const dest=getLaneGain('bass')||a.bus;g.connect(dest);trackNode(cleanMs);
       gc(o1,[o2,o3,sub,sg,mix,bp,sat,motion,mg,fil,g],cleanMs);
       ss(o1,t);ss(o2,t);ss(o3,t);ss(sub,t);ss(motion,t);st(o1,t+rel+0.06);st(o2,t+rel+0.06);st(o3,t+rel+0.06);st(sub,t+rel+0.08);st(motion,t+rel+0.06);
     } else if(mode==='reese'){
-      const det=Math.max(0.008,bassPresetCfg.bassDetune??0.018);
+      const det=Math.max(0.008,bassCfg.bassDetune??0.018);
       const o1=a.ctx.createOscillator(),o2=a.ctx.createOscillator(),sub=a.ctx.createOscillator();
       const width=a.ctx.createGain(),sg=a.ctx.createGain();
       const mover=a.ctx.createOscillator(),mg=a.ctx.createGain();
       o1.type='sawtooth';o2.type='sawtooth';sub.type='sine';
       o1.frequency.value=f*(1-det);o2.frequency.value=f*(1+det);sub.frequency.value=f*0.5;
-      width.gain.value=0.46;sg.gain.value=bassSubAmt*0.46;
-      mover.frequency.value=0.12+bassPresetCfg.bassMotion*0.8;
-      mg.gain.value=80+bassPresetCfg.bassMotion*260+bassPresetCfg.bassPunch*60;
+      width.gain.value=0.46;sg.gain.value=rtBassSub*0.46;
+      mover.frequency.value=0.12+bassCfg.bassMotion*0.8;
+      mg.gain.value=80+bassCfg.bassMotion*260+bassCfg.bassPunch*60;
       mover.connect(mg);mg.connect(fil.frequency);
       o1.connect(width);o2.connect(width);sub.connect(sg);width.connect(fil);sg.connect(fil);fil.connect(g);
       const dest=getLaneGain('bass')||a.bus;g.connect(dest);trackNode(cleanMs);
@@ -2085,12 +2213,12 @@ export default function App(){
       const o1=a.ctx.createOscillator(),o2=a.ctx.createOscillator();
       const bite=a.ctx.createBiquadFilter(),sg=a.ctx.createGain();
       o1.type='square';o2.type='triangle';
-      o1.frequency.value=f;o2.frequency.value=f*(1+(bassPresetCfg.bassDetune??0.006));
-      bite.type='lowpass';bite.frequency.setValueAtTime(clamp(260+(bassFilter+charCfg.bassFilterBias)*4200+(tone+charCfg.toneBias)*700,180,4800),t);
-      bite.frequency.exponentialRampToValueAtTime(clamp(90+(bassFilter+charCfg.bassFilterBias)*900,80,1800),t+pluckRel*0.6);
-      bite.Q.value=0.9+bassPresetCfg.bassPunch*2.2;
-      sg.gain.value=bassSubAmt*0.22;
-      g.gain.cancelScheduledValues(t);g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime((0.54+bassPresetCfg.bassPunch*0.24)*accent,t+0.002);g.gain.exponentialRampToValueAtTime(0.0001,t+pluckRel);
+      o1.frequency.value=f;o2.frequency.value=f*(1+(bassCfg.bassDetune??0.006));
+      bite.type='lowpass';bite.frequency.setValueAtTime(clamp(260+(rtBassFilter+charCfg.bassFilterBias)*4200+(rtTone+charCfg.toneBias)*700,180,4800),t);
+      bite.frequency.exponentialRampToValueAtTime(clamp(90+(rtBassFilter+charCfg.bassFilterBias)*900,80,1800),t+pluckRel*0.6);
+      bite.Q.value=0.9+bassCfg.bassPunch*2.2;
+      sg.gain.value=rtBassSub*0.22;
+      g.gain.cancelScheduledValues(t);g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime((0.54+bassCfg.bassPunch*0.24)*accent,t+0.002);g.gain.exponentialRampToValueAtTime(0.0001,t+pluckRel);
       o1.connect(bite);o2.connect(bite);bite.connect(g);
       const sub=a.ctx.createOscillator();sub.type='sine';sub.frequency.value=f*0.5;sub.connect(sg);sg.connect(bite);
       const dest=getLaneGain('bass')||a.bus;g.connect(dest);trackNode(cleanMs);
@@ -2100,10 +2228,10 @@ export default function App(){
       const o1=a.ctx.createOscillator(),o2=a.ctx.createOscillator();
       const types={sub:'sine',grit:'sawtooth',drone:'sawtooth',saw:'sawtooth',pulse:'square'};
       o1.type=types[mode]||'sawtooth';o2.type=mode==='pulse'?'square':'sine';
-      o1.frequency.value=f;o2.frequency.value=f*(1+(bassPresetCfg.bassDetune??0.005));
-      const sg=a.ctx.createGain();sg.gain.value=bassSubAmt*(mode==='sub'?0.85:mode==='saw'?0.42:0.3);
+      o1.frequency.value=f;o2.frequency.value=f*(1+(bassCfg.bassDetune??0.005));
+      const sg=a.ctx.createGain();sg.gain.value=rtBassSub*(mode==='sub'?0.85:mode==='saw'?0.42:0.3);
       const lfo=a.ctx.createOscillator(),lg=a.ctx.createGain();
-      lfo.frequency.value=0.35+bassPresetCfg.bassMotion*0.9;lg.gain.value=mode==='drone'?18+bassPresetCfg.bassMotion*28:mode==='saw'?10+bassPresetCfg.bassMotion*18:4+bassPresetCfg.bassMotion*10;
+      lfo.frequency.value=0.35+bassCfg.bassMotion*0.9;lg.gain.value=mode==='drone'?18+bassCfg.bassMotion*28:mode==='saw'?10+bassCfg.bassMotion*18:4+bassCfg.bassMotion*10;
       lfo.connect(lg);lg.connect(fil.frequency);
       o1.connect(fil);o2.connect(sg);sg.connect(fil);fil.connect(g);
       const dest=getLaneGain('bass')||a.bus;g.connect(dest);trackNode(cleanMs);
@@ -2125,24 +2253,27 @@ export default function App(){
     const a=audioRef.current;
     const f=NOTE_FREQ[note]||440;
     const baseDur=stepSec()*lenSteps*0.92;
-    const mode=synthPresetCfg.synthMode||GENRES[genre].synthMode||'lead';
+    const synthCfg=buildPresetOptionMap('synth',customPresetBankRef.current)[synthPresetRef.current]||getSynthPresetCfg(synthPresetRef.current);
+    const runtimeGenre=genreRef.current||genre;
+    const mode=synthCfg.synthMode||(GENRES[runtimeGenre]||GENRES.techno).synthMode||'lead';
     const charCfg=getCharacterConfig(soundCharacterRef.current);
     const energy=compositionEnergyRef.current;
-    const synthDetune=synthPresetCfg.synthDetune??0.008;
-    const synthMotion=synthPresetCfg.synthMotion??0.3;
-    const synthPunch=synthPresetCfg.synthPunch??0.5;
+    const rtSynthFilter=synthFilterRef.current, rtTone=toneRef.current, rtCompress=compressRef.current, rtSpace=spaceRef.current;
+    const synthDetune=synthCfg.synthDetune??0.008;
+    const synthMotion=synthCfg.synthMotion??0.3;
+    const synthPunch=synthCfg.synthPunch??0.5;
     const curve=synthCurveRef.current||'balanced';
     const holdBoost=1+synthHoldRef.current*(curve==='bloom'?1.35:curve==='soft'?1.12:curve==='snappy'?0.35:curve==='glass'?0.82:0.9);
     const dur=clamp(baseDur*holdBoost,0.05,10);
     const cleanMs=(dur+1.5)*1000;
 
     if(mode==='glass'||mode==='bell'){
-      const atk=curve==='soft'?0.003:0.001,rel=Math.max(curve==='snappy'?0.22:0.3,dur*(curve==='bloom'?1.55:1.2)+synthFilter*(curve==='glass'?1.6:2));
+      const atk=curve==='soft'?0.003:0.001,rel=Math.max(curve==='snappy'?0.22:0.3,dur*(curve==='bloom'?1.55:1.2)+rtSynthFilter*(curve==='glass'?1.6:2));
       const nb=noiseBuffer(0.04,1,'white');
       const src=a.ctx.createBufferSource();src.buffer=nb;
       const dly=a.ctx.createDelay(0.05);dly.delayTime.value=1/f;
-      const fbk=a.ctx.createGain();fbk.gain.value=0.94-synthFilter*0.12+synthMotion*0.04;
-      const lpf=a.ctx.createBiquadFilter();lpf.type='lowpass';lpf.frequency.value=2000+synthFilter*6000;
+      const fbk=a.ctx.createGain();fbk.gain.value=0.94-rtSynthFilter*0.12+synthMotion*0.04;
+      const lpf=a.ctx.createBiquadFilter();lpf.type='lowpass';lpf.frequency.value=2000+rtSynthFilter*6000;
       const amp=a.ctx.createGain();
       amp.gain.setValueAtTime(0,t);amp.gain.linearRampToValueAtTime((0.42+synthPunch*0.18)*accent,t+atk);amp.gain.exponentialRampToValueAtTime(0.001,t+rel);
       src.connect(dly);dly.connect(lpf);lpf.connect(fbk);fbk.connect(dly);lpf.connect(amp);
@@ -2153,16 +2284,16 @@ export default function App(){
     }
 
     if(mode==='pad'||mode==='choir'||mode==='mist'){
-      const atk=0.06+dur*0.08,rel=Math.max(atk+0.1,dur*0.9+space*0.5);
+      const atk=0.06+dur*0.08,rel=Math.max(atk+0.1,dur*0.9+rtSpace*0.5);
       const o1=a.ctx.createOscillator(),o2=a.ctx.createOscillator(),o3=a.ctx.createOscillator();
       o1.type='sawtooth';o2.type='sawtooth';o3.type='sine';
       o1.frequency.value=f;o2.frequency.value=f*(1+synthDetune);o3.frequency.value=f*(1-synthDetune*0.45);
       const mix=a.ctx.createGain();mix.gain.value=0.3;
-      const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=120+(1-synthFilter)*80+Math.max(0,-charCfg.synthFilterBias*120);
+      const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=120+(1-rtSynthFilter)*80+Math.max(0,-charCfg.synthFilterBias*120);
       const fil=a.ctx.createBiquadFilter();fil.type='lowpass';
-      fil.frequency.setValueAtTime(300+(synthFilter+charCfg.synthFilterBias)*2000+energy*120,t);
-      fil.frequency.linearRampToValueAtTime(800+(synthFilter+charCfg.synthFilterBias)*5000+energy*260,t+atk*2);
-      fil.Q.value=0.3+compress*1.4+synthMotion*0.8;
+      fil.frequency.setValueAtTime(300+(rtSynthFilter+charCfg.synthFilterBias)*2000+energy*120,t);
+      fil.frequency.linearRampToValueAtTime(800+(rtSynthFilter+charCfg.synthFilterBias)*5000+energy*260,t+atk*2);
+      fil.Q.value=0.3+rtCompress*1.4+synthMotion*0.8;
       const amp=a.ctx.createGain();
       amp.gain.setValueAtTime(0,t);amp.gain.linearRampToValueAtTime((0.28+synthPunch*0.14)*accent,t+atk);
       amp.gain.setValueAtTime((0.28+synthPunch*0.14)*accent,t+Math.max(atk+0.01,dur*(0.54+synthMotion*0.14)));
@@ -2185,8 +2316,8 @@ export default function App(){
       m1.connect(mg1);mg1.connect(c1.frequency);
       m2.connect(mg2);mg2.connect(c2.frequency);
       const mix=a.ctx.createGain();mix.gain.value=0.42;
-      const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=150+(1-synthFilter)*90;
-      const lp=a.ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=1800+synthFilter*5000+(tone+charCfg.toneBias)*700;lp.Q.value=0.2+compress*0.4;
+      const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=150+(1-rtSynthFilter)*90;
+      const lp=a.ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=1800+rtSynthFilter*5000+(rtTone+charCfg.toneBias)*700;lp.Q.value=0.2+rtCompress*0.4;
       const amp=a.ctx.createGain();
       amp.gain.setValueAtTime(0,t);amp.gain.linearRampToValueAtTime((0.3+synthPunch*0.16)*accent,t+atk);
       amp.gain.setValueAtTime((0.3+synthPunch*0.16)*accent,t+Math.max(atk+0.01,dur*(0.72+synthMotion*0.16)));
@@ -2201,11 +2332,11 @@ export default function App(){
     if(mode==='brass'||mode==='shimmer'){
       const isShimmer=mode==='shimmer';
       const atk=isShimmer?0.04:0.01;
-      const rel=Math.max(isShimmer?0.5:0.22,dur*(isShimmer?1.08:0.72)+space*(isShimmer?0.42:0.12));
+      const rel=Math.max(isShimmer?0.5:0.22,dur*(isShimmer?1.08:0.72)+rtSpace*(isShimmer?0.42:0.12));
       const mix=a.ctx.createGain();mix.gain.value=isShimmer?0.18:0.24;
       const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=isShimmer?180:140;
       const fil=a.ctx.createBiquadFilter();fil.type=isShimmer?'lowpass':'bandpass';
-      fil.frequency.setValueAtTime(clamp((isShimmer?1200:700)+(synthFilter+charCfg.synthFilterBias)*5200+(tone+charCfg.toneBias)*700,240,9600),t);
+      fil.frequency.setValueAtTime(clamp((isShimmer?1200:700)+(rtSynthFilter+charCfg.synthFilterBias)*5200+(rtTone+charCfg.toneBias)*700,240,9600),t);
       fil.Q.value=isShimmer?0.45:1.2+synthPunch*0.8;
       const amp=a.ctx.createGain();
       amp.gain.setValueAtTime(0,t);amp.gain.linearRampToValueAtTime((isShimmer?0.2:0.26+synthPunch*0.16)*accent,t+atk);
@@ -2230,14 +2361,14 @@ export default function App(){
       const isPluck=mode==='pluck';
       const isHybrid=mode==='hybrid';
       const atk=isPluck?0.003:(0.01+dur*0.04);
-      const rel=isPluck?Math.max(0.12,dur*0.46):Math.max(0.25,dur*(isHybrid?0.8:0.92)+space*0.18);
+      const rel=isPluck?Math.max(0.12,dur*0.46):Math.max(0.25,dur*(isHybrid?0.8:0.92)+rtSpace*0.18);
       const voices=isPluck?2:(isHybrid?3:4);
       const mix=a.ctx.createGain();mix.gain.value=isPluck?0.24:0.18;
-      const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=isPluck?180+(1-synthFilter)*110:130+(1-synthFilter)*90;
+      const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=isPluck?180+(1-rtSynthFilter)*110:130+(1-rtSynthFilter)*90;
       const fil=a.ctx.createBiquadFilter();fil.type='lowpass';
-      fil.frequency.setValueAtTime(clamp((isPluck?520:420)+(synthFilter+charCfg.synthFilterBias)*5200+(tone+charCfg.toneBias)*900+energy*380,240,9200),t);
-      fil.frequency.linearRampToValueAtTime(clamp((isPluck?220:900)+(synthFilter+charCfg.synthFilterBias)*4200+synthMotion*1200+energy*480,180,9800),t+Math.max(0.03,atk*3));
-      fil.Q.value=(isPluck?1.2:0.55)+compress*1.8+synthPunch*0.9;
+      fil.frequency.setValueAtTime(clamp((isPluck?520:420)+(rtSynthFilter+charCfg.synthFilterBias)*5200+(rtTone+charCfg.toneBias)*900+energy*380,240,9200),t);
+      fil.frequency.linearRampToValueAtTime(clamp((isPluck?220:900)+(rtSynthFilter+charCfg.synthFilterBias)*4200+synthMotion*1200+energy*480,180,9800),t+Math.max(0.03,atk*3));
+      fil.Q.value=(isPluck?1.2:0.55)+rtCompress*1.8+synthPunch*0.9;
       const amp=a.ctx.createGain();
       amp.gain.setValueAtTime(0,t);amp.gain.linearRampToValueAtTime((isPluck?0.22:0.24+synthPunch*0.16)*accent,t+atk);
       amp.gain.setValueAtTime((isPluck?0.16:0.22+synthPunch*0.14)*accent,t+Math.max(atk+0.01,dur*(isPluck?0.3:0.54)));
@@ -2268,15 +2399,15 @@ export default function App(){
     }
 
     if(mode==='strings'||mode==='star'){
-      const atk=0.08+dur*0.06,rel=Math.max(atk+0.1,dur*0.92+space*0.4);
+      const atk=0.08+dur*0.06,rel=Math.max(atk+0.1,dur*0.92+rtSpace*0.4);
       const o1=a.ctx.createOscillator(),o2=a.ctx.createOscillator();
       const vib=a.ctx.createOscillator(),vg=a.ctx.createGain();
       o1.type='sawtooth';o2.type='sawtooth';
       o1.frequency.value=f;o2.frequency.value=f*(1+synthDetune*0.5);
-      vib.frequency.value=4.6+rnd()*0.8+synthMotion*0.9+charCfg.motionBias*0.8;vg.gain.value=1.4+(synthFilter+charCfg.synthFilterBias)*5+synthMotion*2.6+energy*0.8;
+      vib.frequency.value=4.6+rnd()*0.8+synthMotion*0.9+charCfg.motionBias*0.8;vg.gain.value=1.4+(rtSynthFilter+charCfg.synthFilterBias)*5+synthMotion*2.6+energy*0.8;
       vib.connect(vg);vg.connect(o1.frequency);vg.connect(o2.frequency);
-      const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=160+(1-synthFilter)*100;
-      const fil=a.ctx.createBiquadFilter();fil.type='lowpass';fil.frequency.value=400+synthFilter*5000;fil.Q.value=0.3;
+      const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=160+(1-rtSynthFilter)*100;
+      const fil=a.ctx.createBiquadFilter();fil.type='lowpass';fil.frequency.value=400+rtSynthFilter*5000;fil.Q.value=0.3;
       const amp=a.ctx.createGain();
       amp.gain.setValueAtTime(0,t);amp.gain.linearRampToValueAtTime((0.26+synthPunch*0.14)*accent,t+atk);
       amp.gain.setValueAtTime((0.26+synthPunch*0.14)*accent,t+Math.max(atk+0.01,dur*(0.62+synthMotion*0.16)));
@@ -2296,14 +2427,14 @@ export default function App(){
     const vib=a.ctx.createOscillator(),vg=a.ctx.createGain();
     vib.frequency.value=4.8+synthMotion*1.4+charCfg.motionBias*0.9;vg.gain.value=clamp((mode==='lead'?6.5:2.4)+synthPunch*3.2+synthMotion*2+energy*1.2,0,15);
     vib.connect(vg);vg.connect(o1.frequency);
-    const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=110+(1-synthFilter)*70;
-    const fil=a.ctx.createBiquadFilter();fil.type='lowpass';fil.frequency.value=200+(synthFilter+charCfg.synthFilterBias)*7000+(tone+charCfg.toneBias)*1200+energy*260;fil.Q.value=0.45+compress*2.6+synthPunch*0.8+energy*0.25;
+    const hp=a.ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=110+(1-rtSynthFilter)*70;
+    const fil=a.ctx.createBiquadFilter();fil.type='lowpass';fil.frequency.value=200+(rtSynthFilter+charCfg.synthFilterBias)*7000+(rtTone+charCfg.toneBias)*1200+energy*260;fil.Q.value=0.45+rtCompress*2.6+synthPunch*0.8+energy*0.25;
     const amp=a.ctx.createGain();
     amp.gain.setValueAtTime(0,t);amp.gain.linearRampToValueAtTime((0.28+synthPunch*0.18)*accent,t+atk);
     amp.gain.setValueAtTime((0.28+synthPunch*0.18)*accent,t+Math.max(atk+0.01,dur*(0.58+synthMotion*0.14)));
     amp.gain.exponentialRampToValueAtTime(0.001,t+rel);
     const mix=a.ctx.createGain();mix.gain.value=0.5;
-    const sheen=a.ctx.createBiquadFilter();sheen.type='highshelf';sheen.frequency.value=clamp(2600+(tone+charCfg.toneBias)*1800+synthMotion*900,1800,7200);sheen.gain.value=clamp((synthPunch-0.45)*6+energy*2.4,-2,5.5);
+    const sheen=a.ctx.createBiquadFilter();sheen.type='highshelf';sheen.frequency.value=clamp(2600+(rtTone+charCfg.toneBias)*1800+synthMotion*900,1800,7200);sheen.gain.value=clamp((synthPunch-0.45)*6+energy*2.4,-2,5.5);
     o1.connect(mix);o2.connect(mix);mix.connect(hp);hp.connect(fil);fil.connect(sheen);sheen.connect(amp);
     const dest=getLaneGain('synth')||a.bus;amp.connect(dest);trackNode(cleanMs);
     gc(o1,[o2,vib,vg,mix,hp,fil,sheen,amp],cleanMs);
@@ -2350,7 +2481,8 @@ export default function App(){
       }
       else if(lane==='hat'){
         const openBase=(li%16===7||li%16===15||si%32===0);
-        const openChance=clamp((drumPresetCfg.hatOpenChance??0.12)+(runtimeVar?.openBias||0),0.04,0.42);
+        const liveDrumCfg=buildPresetOptionMap('drum',customPresetBankRef.current)[drumPresetRef.current]||getDrumPresetCfg(drumPresetRef.current);
+        const openChance=clamp((liveDrumCfg.hatOpenChance??0.12)+(runtimeVar?.openBias||0),0.04,0.42);
         const isOpen=openBase&&rnd()<openChance;
         if(sd?.on || shouldExtra)playHat(shouldExtra&&!sd?.on?fa*0.7:fa,noteT,isOpen,{...hum,...runtimeVar,variant:hum.variant||((runtimeVar?.variantBias||0)>0.14?1:0)});
       }
@@ -2499,125 +2631,122 @@ export default function App(){
     intro:()=>triggerSection('intro'),
     outro:()=>triggerSection('outro'),
     reharmonize:()=>{
-      const pp=CHORD_PROGS[modeName]||CHORD_PROGS.minor;
-      progressionRef.current=pick(pp);
-      compositionRef.current=createCompositionBlueprint(genre,modeName,progressionRef.current,arpModeRef.current,arcRef.current);
+      const runtimeMode=modeNameRef.current||modeName;
+      const runtimeGenre=genreRef.current||genre;
+      const pp=CHORD_PROGS[runtimeMode]||CHORD_PROGS.minor;
+      let nextProg=pick(pp);
+      if(JSON.stringify(nextProg)===JSON.stringify(progressionRef.current) && pp.length>1){
+        const idx=pp.findIndex(p=>JSON.stringify(p)===JSON.stringify(progressionRef.current));
+        nextProg=pp[(idx+1)%pp.length]||pick(pp);
+      }
+      progressionRef.current=nextProg;
+      compositionRef.current=createCompositionBlueprint(runtimeGenre,runtimeMode,progressionRef.current,arpModeRef.current,arcRef.current);
       compositionCycleRef.current=0;
-      regenerateSection(currentSectionName);
-      setStatus('Reharmonized');
+      regenerateSection(currentSectionRef.current||currentSectionName);
+      setStatus('Reharmonized — new path');
     },
     mutate:()=>{
       pushUndo();
       const np={...patternsRef.current};
+      const lanePlan={kick:0.1,snare:0.12,hat:0.18,bass:0.16,synth:0.18};
       ['kick','snare','hat','bass','synth'].forEach(ln=>{
         const ll=laneLenRef.current[ln]||16;
-        const flips=Math.max(2,Math.floor(ll*0.08));
+        const flips=Math.max(3,Math.floor(ll*lanePlan[ln]));
         np[ln]=np[ln].map(s=>({...s}));
-        for(let i=0;i<flips;i++){const pos=Math.floor(rnd()*ll);if(pos%4!==0||ln!=='kick')np[ln][pos].on=!np[ln][pos].on;}
+        for(let i=0;i<flips;i++){
+          const pos=Math.floor(rnd()*ll);
+          if(ln==='kick'&&pos%16===0)continue;
+          np[ln][pos].on=!np[ln][pos].on;
+          np[ln][pos].v=clamp((np[ln][pos].v||0.72)+(rnd()*0.22-0.08),0.35,1);
+          np[ln][pos].p=clamp((np[ln][pos].p||0.78)+(rnd()*0.18-0.04),0.32,1);
+        }
       });
       const safe=mergeProtectedMutation(np,patternsRef.current,patternAuthorityRef.current);
       setPatterns(safe);patternsRef.current=safe;
-      setStatus('Pattern mutated');
+      setStatus('Pattern mutated hard');
     },
     thinOut:()=>{
       pushUndo();
       const np={...patternsRef.current};
-      ['hat','synth','bass'].forEach(ln=>{
-        const ll=laneLenRef.current[ln]||16;
-        np[ln]=np[ln].map((s,i)=>({...s,on:s.on&&(i%4===0||rnd()>0.45)}));
+      ['kick','snare','hat','bass','synth'].forEach(ln=>{
+        np[ln]=np[ln].map((s,i)=>{
+          const anchor=(ln==='kick'&&i%4===0)||(ln==='snare'&&(i%8===4||i%16===12))||(ln!=='kick'&&ln!=='snare'&&i%8===0);
+          return {...s,on:s.on&&(anchor||rnd()>0.62),v:anchor?Math.min(1,(s.v||0.72)+0.08):(s.v||0.72)};
+        });
       });
       const safe=mergeProtectedMutation(np,patternsRef.current,patternAuthorityRef.current);
       setPatterns(safe);patternsRef.current=safe;
-      setStatus('Thinned out');
+      setStatus('Arrangement thinned');
     },
     thicken:()=>{
       pushUndo();
       const np={...patternsRef.current};
-      ['hat','kick'].forEach(ln=>{
-        const ll=laneLenRef.current[ln]||16;
-        np[ln]=np[ln].map((s,i)=>({...s,on:s.on||(rnd()<0.22),v:s.v||0.65,p:s.p||0.7}));
+      ['kick','snare','hat','bass','synth'].forEach(ln=>{
+        np[ln]=np[ln].map((s,i)=>{
+          const pulse=i%4===0;
+          const support=i%8===2||i%8===6;
+          const addChance=ln==='hat'?0.32:ln==='kick'?0.16:ln==='snare'?0.12:0.22;
+          const shouldAdd=!s.on && ((pulse&&rnd()<addChance*0.75)||(support&&rnd()<addChance)||(rnd()<addChance*0.25));
+          if(!(s.on||shouldAdd))return {...s};
+          return {...s,on:true,v:clamp((s.v||0.7)+(shouldAdd?0.08:0.03),0.4,1),p:clamp((s.p||0.78)+(shouldAdd?0.06:0.02),0.35,1)};
+        });
       });
       const safe=mergeProtectedMutation(np,patternsRef.current,patternAuthorityRef.current);
       setPatterns(safe);patternsRef.current=safe;
-      setStatus('Thickened');
+      setStatus('Arrangement thickened');
     },
     randomizeNotes:()=>{
-      // Randomize synth line within current mode's scale
-      const mode=MODES[modeName]||MODES.minor;
-      const sp=mode.s;
+      const runtimeMode=modeNameRef.current||modeName;
+      const sp=(MODES[runtimeMode]||MODES.minor).s;
       if(patternAuthorityRef.current.synth==='lock'){setStatus('Synth locked');return;}
       pushUndo();
-      setSynthLine(prev=>{const active=patternsRef.current.synth;const n=prev.map((v,i)=>active[i]?.on?pick(sp):v);synthRef.current=n;return n;});
-      setStatus('Synth notes randomized');
+      setSynthLine(prev=>{
+        const active=patternsRef.current.synth;
+        const n=prev.map((v,i)=>active[i]?.on?randomizeNoteValue(v,sp,{allowChord:true}):v);
+        synthRef.current=n;
+        return n;
+      });
+      setStatus('Synth notes revoiced');
     },
     randomizeBass:()=>{
-      const mode=MODES[modeName]||MODES.minor;
-      const bp=mode.b;
+      const runtimeMode=modeNameRef.current||modeName;
+      const bp=(MODES[runtimeMode]||MODES.minor).b;
       if(patternAuthorityRef.current.bass==='lock'){setStatus('Bass locked');return;}
       pushUndo();
-      setBassLine(prev=>{const active=patternsRef.current.bass;const n=prev.map((v,i)=>active[i]?.on?pick(bp):v);bassRef.current=n;return n;});
-      setStatus('Bass notes randomized');
+      setBassLine(prev=>{
+        const active=patternsRef.current.bass;
+        const n=prev.map((v,i)=>active[i]?.on?randomizeNoteValue(v,bp):v);
+        bassRef.current=n;
+        return n;
+      });
+      setStatus('Bass line revoiced');
     },
     shiftNotesUp:()=>{
-      const mode=MODES[modeName]||MODES.minor;
-      ['bass','synth'].forEach(lane=>{
-        const pool=lane==='bass'?mode.b:mode.s;
-        if(lane==='bass')setBassLine(prev=>{const active=patternsRef.current[lane];const n=prev.map((v,i)=>{if(!active[i]?.on)return v;const idx=pool.indexOf(v);return pool[Math.min(idx+1,pool.length-1)];});bassRef.current=n;return n;});
-        else setSynthLine(prev=>{const active=patternsRef.current[lane];const n=prev.map((v,i)=>{if(!active[i]?.on)return v;const idx=pool.indexOf(v);return pool[Math.min(idx+1,pool.length-1)];});synthRef.current=n;return n;});
-      });
+      const runtimeMode=modeNameRef.current||modeName;
+      const mode=MODES[runtimeMode]||MODES.minor;
+      pushUndo();
+      setBassLine(prev=>{const active=patternsRef.current.bass;const n=prev.map((v,i)=>!active[i]?.on?v:shiftNoteValue(v,mode.b,1));bassRef.current=n;return n;});
+      setSynthLine(prev=>{const active=patternsRef.current.synth;const n=prev.map((v,i)=>!active[i]?.on?v:shiftNoteValue(v,mode.s,1));synthRef.current=n;return n;});
       setStatus('Notes shifted up');
     },
     shiftNotesDown:()=>{
-      const mode=MODES[modeName]||MODES.minor;
-      ['bass','synth'].forEach(lane=>{
-        const pool=lane==='bass'?mode.b:mode.s;
-        if(lane==='bass')setBassLine(prev=>{const active=patternsRef.current[lane];const n=prev.map((v,i)=>{if(!active[i]?.on)return v;const idx=pool.indexOf(v);return pool[Math.max(idx-1,0)];});bassRef.current=n;return n;});
-        else setSynthLine(prev=>{const active=patternsRef.current[lane];const n=prev.map((v,i)=>{if(!active[i]?.on)return v;const idx=pool.indexOf(v);return pool[Math.max(idx-1,0)];});synthRef.current=n;return n;});
-      });
+      const runtimeMode=modeNameRef.current||modeName;
+      const mode=MODES[runtimeMode]||MODES.minor;
+      pushUndo();
+      setBassLine(prev=>{const active=patternsRef.current.bass;const n=prev.map((v,i)=>!active[i]?.on?v:shiftNoteValue(v,mode.b,-1));bassRef.current=n;return n;});
+      setSynthLine(prev=>{const active=patternsRef.current.synth;const n=prev.map((v,i)=>!active[i]?.on?v:shiftNoteValue(v,mode.s,-1));synthRef.current=n;return n;});
       setStatus('Notes shifted down');
     },
     shiftArp:()=>{
       const modes=['up','down','updown','outside'];
       const next=modes[(modes.indexOf(arpModeRef.current)+1)%modes.length];
       setArpMode(next);arpModeRef.current=next;
-      compositionRef.current=createCompositionBlueprint(genre,modeName,progressionRef.current,next);
+      compositionRef.current=createCompositionBlueprint(genreRef.current||genre,modeNameRef.current||modeName,progressionRef.current,next);
       compositionCycleRef.current=0;
-      regenerateSection(currentSectionName);
+      regenerateSection(currentSectionRef.current||currentSectionName);
       setStatus(`Arp → ${next}`);
     },
     clear:()=>clearPattern(),
-  };
-
-  // ─── AUTOPILOT ────────────────────────────────────────────────────────────
-  const chooseAutopilotAction=(sectionName,phraseBar=1,phraseLength=4)=>{
-    const intensity=clamp(autopilotIntensity,0,1);
-    const nearTurn=phraseBar>=phraseLength;
-    const midPhrase=phraseBar===Math.max(1,Math.ceil(phraseLength*0.5));
-    const weighted=(items)=>{
-      const total=items.reduce((sum,[,w])=>sum+w,0);
-      let cursor=rnd()*total;
-      for(const[item,w]of items){cursor-=w;if(cursor<=0)return item;}
-      return items[items.length-1]?.[0]||null;
-    };
-    const pools={
-      intro:[['thinOut',2.4],['regenerate',1.6],['randomizeNotes',1.1],['shiftArp',0.9]],
-      build:[['thicken',2.4],['mutate',1.7],['shiftArp',1.3],['reharmonize',0.9]],
-      drop:[['mutate',2.1],['thicken',1.9],['randomizeBass',1.25],['regenerate',0.95]],
-      groove:[['mutate',1.75],['randomizeBass',1.35],['randomizeNotes',1.15],['reharmonize',0.8]],
-      break:[['thinOut',2.2],['randomizeNotes',1.4],['shiftArp',1.0],['regenerate',0.95]],
-      tension:[['thicken',1.9],['shiftArp',1.5],['mutate',1.4],['reharmonize',0.95]],
-      fill:[['mutate',2.35],['thicken',1.5],['randomizeBass',1.0],['regenerate',0.9]],
-      outro:[['thinOut',2.5],['randomizeNotes',0.9],['regenerate',0.8],['shiftArp',0.5]],
-    };
-    if(!songActiveRef.current && nearTurn && rnd()<0.16+intensity*0.24){
-      const map={intro:['build','groove'],build:['drop','tension'],groove:['break','tension','drop'],break:['build','outro'],tension:['drop','fill'],fill:['drop','groove'],drop:['groove','break','outro'],outro:['intro','groove']};
-      const target=pick(map[sectionName]||Object.keys(SECTIONS));
-      return {kind:'section',target};
-    }
-    const cadenceBoost=nearTurn?0.55:midPhrase?0.25:0;
-    const pool=(pools[sectionName]||pools.groove).map(([name,weight])=>[name,weight+cadenceBoost*(name==='mutate'||name==='thicken'||name==='regenerate'?1:0.4)+(intensity>0.72&&name==='reharmonize'?0.25:0)]);
-    if(intensity<0.34 && rnd()<0.34)return null;
-    return {kind:'action',target:weighted(pool)};
   };
 
   const runAutopilotBar=(phraseBar=1,phraseLength=4)=>{
@@ -2752,6 +2881,7 @@ export default function App(){
     space,tone,noiseMix,drive,compress,bassFilter,synthFilter,drumDecay,bassSubAmt,fmIdx,
     master,swing,humanize,grooveAmt,projectName,polySynth,bassStack,bassPreset,synthPreset,drumPreset,performancePreset,soundCharacter,compositionEnergy,patternAuthority,laneVolume,laneProbability,synthChordChance,synthHold,synthCurve,genreFamily:compositionRef.current?.genreFamily||getGenreFamilyProfile(genre),
     selectedArcIdx:selectedArcIdxRef.current,songArc:arcRef.current,arcIdx:arcIdxRef.current,
+    customPresetBank,
     patterns,bassLine,synthLine,laneLen,
   });
   const applySnap=(snap)=>{
@@ -2769,12 +2899,13 @@ export default function App(){
     compositionRef.current.soundCharacter=snap.soundCharacter||compositionRef.current.soundCharacter||getGenreSoundCharacter(snap.genre||'techno');
     compositionRef.current.genreFamily=snap.genreFamily||compositionRef.current.genreFamily||getGenreFamilyProfile(snap.genre||'techno');
     compositionCycleRef.current=0;
-    setSpace(snap.space??0.3);setTone(snap.tone??0.7);setNoiseMix(snap.noiseMix??0.2);setDrive(snap.drive??0.1);
-    setCompress(snap.compress??0.3);setBassFilter(snap.bassFilter??0.55);setSynthFilter(snap.synthFilter??0.65);
-    setDrumDecay(snap.drumDecay??0.5);setBassSubAmt(snap.bassSubAmt??0.5);setFmIdx(snap.fmIdx??0.6);fmIdxRef.current=snap.fmIdx??0.6;
+    setSpace(snap.space??0.3);spaceRef.current=snap.space??0.3;setTone(snap.tone??0.7);toneRef.current=snap.tone??0.7;setNoiseMix(snap.noiseMix??0.2);noiseMixRef.current=snap.noiseMix??0.2;setDrive(snap.drive??0.1);driveRef.current=snap.drive??0.1;
+    setCompress(snap.compress??0.3);compressRef.current=snap.compress??0.3;setBassFilter(snap.bassFilter??0.55);bassFilterRef.current=snap.bassFilter??0.55;setSynthFilter(snap.synthFilter??0.65);synthFilterRef.current=snap.synthFilter??0.65;
+    setDrumDecay(snap.drumDecay??0.5);drumDecayRef.current=snap.drumDecay??0.5;setBassSubAmt(snap.bassSubAmt??0.5);bassSubAmtRef.current=snap.bassSubAmt??0.5;setFmIdx(snap.fmIdx??0.6);fmIdxRef.current=snap.fmIdx??0.6;
     setMaster(snap.master??0.85);setSwing(snap.swing??0.03);swingRef.current=snap.swing??0.03;setHumanize(snap.humanize??0.012);humanizeRef.current=snap.humanize??0.012;setGrooveAmt(snap.grooveAmt??0.65);grooveRef.current=snap.grooveAmt??0.65;
-    setPolySynth(snap.polySynth??true);setBassStack(snap.bassStack??true);setBassPreset(snap.bassPreset??'sub_floor');setSynthPreset(snap.synthPreset??'velvet_pad');setDrumPreset(snap.drumPreset??'tight_punch');setPerformancePreset(snap.performancePreset??'club_night');setSoundCharacter(snap.soundCharacter??compositionRef.current.soundCharacter??getGenreSoundCharacter(snap.genre||'techno'));soundCharacterRef.current=snap.soundCharacter??compositionRef.current.soundCharacter??getGenreSoundCharacter(snap.genre||'techno');setCompositionEnergy(snap.compositionEnergy??0.68);compositionEnergyRef.current=snap.compositionEnergy??0.68;const nextAuthority={...defaultPatternAuthority(),...(snap.patternAuthority||{})};setPatternAuthority(nextAuthority);patternAuthorityRef.current=nextAuthority;const nextLaneVolume={...defaultLaneVolume(),...(snap.laneVolume||{})};setLaneVolume(nextLaneVolume);laneVolumeRef.current=nextLaneVolume;const nextLaneProbability={...defaultLaneProbability(),...(snap.laneProbability||{})};setLaneProbability(nextLaneProbability);laneProbabilityRef.current=nextLaneProbability;const nextSynthChordChance=snap.synthChordChance??0.34;setSynthChordChance(nextSynthChordChance);synthChordChanceRef.current=nextSynthChordChance;const nextSynthHold=snap.synthHold??0.56;setSynthHold(nextSynthHold);synthHoldRef.current=nextSynthHold;const nextSynthCurve=SYNTH_CURVES.includes(snap.synthCurve)?snap.synthCurve:'balanced';setSynthCurve(nextSynthCurve);synthCurveRef.current=nextSynthCurve;
+    setPolySynth(snap.polySynth??true);polySynthRef.current=snap.polySynth??true;setBassStack(snap.bassStack??true);bassStackRef.current=snap.bassStack??true;setBassPreset(snap.bassPreset??'sub_floor');bassPresetRef.current=snap.bassPreset??'sub_floor';setSynthPreset(snap.synthPreset??'velvet_pad');synthPresetRef.current=snap.synthPreset??'velvet_pad';setDrumPreset(snap.drumPreset??'tight_punch');drumPresetRef.current=snap.drumPreset??'tight_punch';setPerformancePreset(snap.performancePreset??'club_night');setSoundCharacter(snap.soundCharacter??compositionRef.current.soundCharacter??getGenreSoundCharacter(snap.genre||'techno'));soundCharacterRef.current=snap.soundCharacter??compositionRef.current.soundCharacter??getGenreSoundCharacter(snap.genre||'techno');setCompositionEnergy(snap.compositionEnergy??0.68);compositionEnergyRef.current=snap.compositionEnergy??0.68;const nextAuthority={...defaultPatternAuthority(),...(snap.patternAuthority||{})};setPatternAuthority(nextAuthority);patternAuthorityRef.current=nextAuthority;const nextLaneVolume={...defaultLaneVolume(),...(snap.laneVolume||{})};setLaneVolume(nextLaneVolume);laneVolumeRef.current=nextLaneVolume;const nextLaneProbability={...defaultLaneProbability(),...(snap.laneProbability||{})};setLaneProbability(nextLaneProbability);laneProbabilityRef.current=nextLaneProbability;const nextSynthChordChance=snap.synthChordChance??0.34;setSynthChordChance(nextSynthChordChance);synthChordChanceRef.current=nextSynthChordChance;const nextSynthHold=snap.synthHold??0.56;setSynthHold(nextSynthHold);synthHoldRef.current=nextSynthHold;const nextSynthCurve=SYNTH_CURVES.includes(snap.synthCurve)?snap.synthCurve:'balanced';setSynthCurve(nextSynthCurve);synthCurveRef.current=nextSynthCurve;
     if(snap.projectName)setProjectName(snap.projectName);
+    if(snap.customPresetBank){const nextCustom={...defaultCustomPresetBank(),...(snap.customPresetBank||{})};setCustomPresetBank(nextCustom);customPresetBankRef.current=nextCustom;}
     const restoredArc=Array.isArray(snap.songArc)&&snap.songArc.length?snap.songArc:[...(SONG_ARCS[snap.selectedArcIdx||0]||SONG_ARCS[0])];
     const restoredArcIndex=clamp(snap.selectedArcIdx||0,0,SONG_ARCS.length-1);
     setSelectedArcIdx(restoredArcIndex);selectedArcIdxRef.current=restoredArcIndex;
@@ -2845,7 +2976,7 @@ export default function App(){
       }catch{}
     },180);
     return()=>{if(persistTimerRef.current)clearTimeout(persistTimerRef.current);};
-  },[genre,modeName,bpm,currentSectionName,grooveProfile,space,tone,noiseMix,drive,compress,bassFilter,synthFilter,drumDecay,bassSubAmt,fmIdx,master,swing,humanize,grooveAmt,projectName,polySynth,bassStack,bassPreset,synthPreset,drumPreset,performancePreset,soundCharacter,compositionEnergy,patternAuthority,laneVolume,laneProbability,synthChordChance,synthHold,synthCurve,patterns,bassLine,synthLine,laneLen,savedScenes]);
+  },[genre,modeName,bpm,currentSectionName,grooveProfile,space,tone,noiseMix,drive,compress,bassFilter,synthFilter,drumDecay,bassSubAmt,fmIdx,master,swing,humanize,grooveAmt,projectName,polySynth,bassStack,bassPreset,synthPreset,drumPreset,performancePreset,soundCharacter,compositionEnergy,patternAuthority,laneVolume,laneProbability,synthChordChance,synthHold,synthCurve,patterns,bassLine,synthLine,laneLen,savedScenes,customPresetBank]);
 
   // ─── RECORDING ────────────────────────────────────────────────────────────
   const startRec=async()=>{
@@ -2883,6 +3014,29 @@ export default function App(){
     });
   };
 
+  const saveCustomPresetBank=(updater)=>{
+    setCustomPresetBank(prev=>{const next=typeof updater==='function'?updater(prev):updater;customPresetBankRef.current=next;return next;});
+  };
+
+  const previewForgedPreset=(kind,spec)=>{
+    const preset=createForgedPreset(kind,spec,genreRef.current||genre);
+    applyPartialPreset({...preset});
+    setStatus(`${kind.toUpperCase()} forge preview`);
+    return preset;
+  };
+
+  const saveForgedPreset=(kind,spec)=>{
+    const preset=createForgedPreset(kind,spec,genreRef.current||genre);
+    const key=`user_${slugifyPresetLabel(preset.label)}_${Date.now().toString(36).slice(-4)}`;
+    saveCustomPresetBank(prev=>({...prev,[kind]:{...(prev[kind]||{}),[key]:preset}}));
+    if(kind==='bass'){setBassPreset(key);bassPresetRef.current=key;}
+    if(kind==='synth'){setSynthPreset(key);synthPresetRef.current=key;}
+    if(kind==='drum'){setDrumPreset(key);drumPresetRef.current=key;}
+    applyPartialPreset({...preset});
+    setStatus(`${kind.toUpperCase()} preset saved — ${preset.label}`);
+    return key;
+  };
+
   const applyPartialPreset=(preset)=>{
     if(!preset)return;
     const targetGenre=preset.genre&&preset.genre!==genre?preset.genre:genre;
@@ -2895,40 +3049,40 @@ export default function App(){
       const next={...GENRES[targetGenre],synthMode:preset.synthMode};
       GENRES[targetGenre]=next;
     }
-    if(preset.space!==undefined)setSpace(preset.space);
-    if(preset.tone!==undefined)setTone(preset.tone);
-    if(preset.drive!==undefined)setDrive(preset.drive);
-    if(preset.compress!==undefined)setCompress(preset.compress);
-    if(preset.noiseMix!==undefined)setNoiseMix(preset.noiseMix);
-    if(preset.drumDecay!==undefined)setDrumDecay(preset.drumDecay);
-    if(preset.bassFilter!==undefined)setBassFilter(preset.bassFilter);
-    if(preset.synthFilter!==undefined)setSynthFilter(preset.synthFilter);
-    if(preset.bassSubAmt!==undefined)setBassSubAmt(preset.bassSubAmt);
+    if(preset.space!==undefined){setSpace(preset.space);spaceRef.current=preset.space;}
+    if(preset.tone!==undefined){setTone(preset.tone);toneRef.current=preset.tone;}
+    if(preset.drive!==undefined){setDrive(preset.drive);driveRef.current=preset.drive;}
+    if(preset.compress!==undefined){setCompress(preset.compress);compressRef.current=preset.compress;}
+    if(preset.noiseMix!==undefined){setNoiseMix(preset.noiseMix);noiseMixRef.current=preset.noiseMix;}
+    if(preset.drumDecay!==undefined){setDrumDecay(preset.drumDecay);drumDecayRef.current=preset.drumDecay;}
+    if(preset.bassFilter!==undefined){setBassFilter(preset.bassFilter);bassFilterRef.current=preset.bassFilter;}
+    if(preset.synthFilter!==undefined){setSynthFilter(preset.synthFilter);synthFilterRef.current=preset.synthFilter;}
+    if(preset.bassSubAmt!==undefined){setBassSubAmt(preset.bassSubAmt);bassSubAmtRef.current=preset.bassSubAmt;}
     if(preset.fmIdx!==undefined){setFmIdx(preset.fmIdx);fmIdxRef.current=preset.fmIdx;}
-    if(preset.polySynth!==undefined)setPolySynth(preset.polySynth);
-    if(preset.bassStack!==undefined)setBassStack(preset.bassStack);
+    if(preset.polySynth!==undefined){setPolySynth(preset.polySynth);polySynthRef.current=preset.polySynth;}
+    if(preset.bassStack!==undefined){setBassStack(preset.bassStack);bassStackRef.current=preset.bassStack;}
     if(preset.grooveAmt!==undefined){setGrooveAmt(preset.grooveAmt);grooveRef.current=preset.grooveAmt;}
     if(preset.swing!==undefined){setSwing(preset.swing);swingRef.current=preset.swing;}
   };
 
   const applyBassPreset=(key)=>{
-    const preset=SOUND_PRESETS.bass[key];
+    const preset=bassPresetOptions[key]||SOUND_PRESETS.bass[key];
     if(!preset)return;
-    setBassPreset(key);
+    setBassPreset(key);bassPresetRef.current=key;
     applyPartialPreset({...preset});
     setStatus(`Bass preset — ${preset.label}`);
   };
   const applySynthPreset=(key)=>{
-    const preset=SOUND_PRESETS.synth[key];
+    const preset=synthPresetOptions[key]||SOUND_PRESETS.synth[key];
     if(!preset)return;
-    setSynthPreset(key);
+    setSynthPreset(key);synthPresetRef.current=key;
     applyPartialPreset({...preset});
     setStatus(`Synth preset — ${preset.label}`);
   };
   const applyDrumPreset=(key)=>{
-    const preset=SOUND_PRESETS.drum[key];
+    const preset=drumPresetOptions[key]||SOUND_PRESETS.drum[key];
     if(!preset)return;
-    setDrumPreset(key);
+    setDrumPreset(key);drumPresetRef.current=key;
     applyPartialPreset({...preset});
     setStatus(`Drum preset — ${preset.label}`);
   };
@@ -2942,7 +3096,8 @@ export default function App(){
 
   const clearPattern=()=>{
     pushUndo();
-    const mode=MODES[modeName]||MODES.minor;
+    const runtimeMode=modeNameRef.current||modeName;
+    const mode=MODES[runtimeMode]||MODES.minor;
     const empty={kick:mkSteps(),snare:mkSteps(),hat:mkSteps(),bass:mkSteps(),synth:mkSteps()};
     setPatterns(empty);patternsRef.current=empty;
     const newBass=mkNotes(mode.b[0]||'C2');
@@ -3119,9 +3274,9 @@ export default function App(){
         </div>
 
         <div style={{display:'flex',alignItems:'center',gap:4,flexWrap:'wrap',minWidth:isPhone?'100%':'auto'}}>
-          <PresetSelect label='BASS' value={bassPreset} options={SOUND_PRESETS.bass} onChange={applyBassPreset} accent='#22d3ee' />
-          <PresetSelect label='SYNTH' value={synthPreset} options={SOUND_PRESETS.synth} onChange={applySynthPreset} accent={gc_} />
-          <PresetSelect label='DRUM' value={drumPreset} options={SOUND_PRESETS.drum} onChange={applyDrumPreset} accent='#ffb347' />
+          <PresetSelect label='BASS' value={bassPreset} options={bassPresetOptions} onChange={applyBassPreset} accent='#22d3ee' />
+          <PresetSelect label='SYNTH' value={synthPreset} options={synthPresetOptions} onChange={applySynthPreset} accent={gc_} />
+          <PresetSelect label='DRUM' value={drumPreset} options={drumPresetOptions} onChange={applyDrumPreset} accent='#ffb347' />
           <PresetSelect label='PERF' value={performancePreset} options={SOUND_PRESETS.performance} onChange={applyPerformancePreset} accent='#7ee787' />
         </div>
 
@@ -3207,6 +3362,7 @@ export default function App(){
         toggleCell={toggleCell}
         songArc={songArc} arcIdx={arcIdx} songActive={songActive}
         bassPreset={bassPreset} synthPreset={synthPreset} drumPreset={drumPreset} performancePreset={performancePreset}
+        bassPresetOptions={bassPresetOptions} synthPresetOptions={synthPresetOptions} drumPresetOptions={drumPresetOptions}
         applyBassPreset={applyBassPreset} applySynthPreset={applySynthPreset} applyDrumPreset={applyDrumPreset} applyPerformancePreset={applyPerformancePreset}
         laneVolume={laneVolume} setLaneVolume={setLaneVolume}
         laneProbability={laneProbability} setLaneProbability={setLaneProbability}
@@ -3246,6 +3402,7 @@ export default function App(){
         projectName={projectName} setProjectName={setProjectName}
         clearPattern={clearPattern} polySynth={polySynth} setPolySynth={setPolySynth} bassStack={bassStack} setBassStack={setBassStack}
         bassPreset={bassPreset} synthPreset={synthPreset} drumPreset={drumPreset} performancePreset={performancePreset}
+        bassPresetOptions={bassPresetOptions} synthPresetOptions={synthPresetOptions} drumPresetOptions={drumPresetOptions}
         applyBassPreset={applyBassPreset} applySynthPreset={applySynthPreset} applyDrumPreset={applyDrumPreset} applyPerformancePreset={applyPerformancePreset}
         laneVolume={laneVolume} setLaneVolume={setLaneVolume}
         laneProbability={laneProbability} setLaneProbability={setLaneProbability}
@@ -3275,7 +3432,7 @@ export default function App(){
 // ─────────────────────────────────────────────────────────────────────────────
 // PERFORM VIEW — full-screen live performance interface
 // ─────────────────────────────────────────────────────────────────────────────
-function PerformView({genre,gc,isPlaying,currentSectionName,laneVU,patterns,bassLine,synthLine,laneLen,step,page,setPage,activeNotes,arpeMode,modeName,autopilot,autopilotIntensity,setAutopilotIntensity,perfActions,regenerateSection,savedScenes,saveScene,loadScene,master,setMaster,space,setSpace,tone,setTone,drive,setDrive,grooveAmt,setGrooveAmt,swing,setSwing,toggleCell,songArc,arcIdx,songActive,setNote,bassPreset,synthPreset,drumPreset,performancePreset,applyBassPreset,applySynthPreset,applyDrumPreset,applyPerformancePreset,laneVolume,setLaneVolume,laneProbability,setLaneProbability,synthChordChance,setSynthChordChance,synthHold,setSynthHold,synthCurve,setSynthCurve,compact,phone}){
+function PerformView({genre,gc,isPlaying,currentSectionName,laneVU,patterns,bassLine,synthLine,laneLen,step,page,setPage,activeNotes,arpeMode,modeName,autopilot,autopilotIntensity,setAutopilotIntensity,perfActions,regenerateSection,savedScenes,saveScene,loadScene,master,setMaster,space,setSpace,tone,setTone,drive,setDrive,grooveAmt,setGrooveAmt,swing,setSwing,toggleCell,songArc,arcIdx,songActive,setNote,bassPreset,synthPreset,drumPreset,performancePreset,bassPresetOptions,synthPresetOptions,drumPresetOptions,applyBassPreset,applySynthPreset,applyDrumPreset,applyPerformancePreset,laneVolume,setLaneVolume,laneProbability,setLaneProbability,synthChordChance,setSynthChordChance,synthHold,setSynthHold,synthCurve,setSynthCurve,compact,phone}){
   const SECTION_COLORS={drop:'#ff2244',break:'#4488ff',build:'#ffaa00',groove:'#00cc66',tension:'#ff6622',fill:'#cc00ff',intro:'#44ffcc',outro:'#aaaaaa'};
   const sc=SECTION_COLORS[currentSectionName]||gc;
   const visibleStart=page*16,visibleEnd=Math.min(visibleStart+16,MAX_STEPS);
@@ -3489,13 +3646,13 @@ function PerformView({genre,gc,isPlaying,currentSectionName,laneVU,patterns,bass
   );
 }
 
-const navBtn={padding:'1px 5px',borderRadius:2,border:'1px solid rgba(255,255,255,0.09)',background:'rgba(255,255,255,0.03)',color:'rgba(255,255,255,0.97)',fontSize:9,cursor:'pointer',fontFamily:'Space Mono,monospace'};
+const navBtn={padding:'1px 5px',borderRadius:2,border:'1px solid rgba(255,255,255,0.09)',background:'rgba(255,255,255,0.03)',color:'rgba(255,255,255,0.97)',fontSize:9.5,cursor:'pointer',fontFamily:'Space Mono,monospace'};
 
 function PresetSelect({label,value,options,onChange,accent='#ffffff',compact=false}){
   return(
     <label style={{display:'flex',flexDirection:'column',gap:2,minWidth:compact?112:124}}>
-      <span style={{fontSize:6.75,color:'rgba(255,255,255,0.93)',letterSpacing:'0.12em',textTransform:'uppercase'}}>{label}</span>
-      <select value={value} onChange={e=>onChange(e.target.value)} style={{background:'rgba(255,255,255,0.04)',border:`1px solid ${accent}33`,color:accent,borderRadius:4,padding:compact?'4px 6px':'5px 7px',fontSize:7.75,fontFamily:'Space Mono,monospace',outline:'none'}}>
+      <span style={{fontSize:7.1,color:'rgba(255,255,255,0.93)',letterSpacing:'0.12em',textTransform:'uppercase'}}>{label}</span>
+      <select value={value} onChange={e=>onChange(e.target.value)} style={{background:'rgba(255,255,255,0.04)',border:`1px solid ${accent}33`,color:accent,borderRadius:4,padding:compact?'4px 6px':'5px 7px',fontSize:8.15,fontFamily:'Space Mono,monospace',outline:'none'}}>
         {Object.entries(options).map(([key,preset])=><option key={key} value={key} style={{color:'#111',background:'#f2f2f2'}}>{preset.label}</option>)}
       </select>
     </label>
@@ -3505,9 +3662,13 @@ function PresetSelect({label,value,options,onChange,accent='#ffffff',compact=fal
 // ─────────────────────────────────────────────────────────────────────────────
 // STUDIO VIEW — detailed editor
 // ─────────────────────────────────────────────────────────────────────────────
-function StudioView({genre,gc,patterns,bassLine,synthLine,laneLen,step,page,setPage,toggleCell,setNote,modeName,laneVU,space,setSpace,tone,setTone,noiseMix,setNoiseMix,drive,setDrive,compress,setCompress,bassFilter,setBassFilter,synthFilter,setSynthFilter,drumDecay,setDrumDecay,bassSubAmt,setBassSubAmt,fmIdx,setFmIdx,master,setMaster,swing,setSwing,humanize,setHumanize,grooveAmt,setGrooveAmt,grooveProfile,setGrooveProfile,regenerateSection,currentSectionName,undoLen,redoLen,undo,redo,recState,startRec,stopRec,recordings,exportJSON,importRef,importJSON,savedScenes,saveScene,loadScene,projectName,setProjectName,clearPattern,polySynth,setPolySynth,bassStack,setBassStack,bassPreset,synthPreset,drumPreset,performancePreset,applyBassPreset,applySynthPreset,applyDrumPreset,applyPerformancePreset,laneVolume,setLaneVolume,laneProbability,setLaneProbability,synthChordChance,setSynthChordChance,synthHold,setSynthHold,synthCurve,setSynthCurve,compact,phone}){
+function StudioView({genre,gc,patterns,bassLine,synthLine,laneLen,step,page,setPage,toggleCell,setNote,modeName,laneVU,space,setSpace,tone,setTone,noiseMix,setNoiseMix,drive,setDrive,compress,setCompress,bassFilter,setBassFilter,synthFilter,setSynthFilter,drumDecay,setDrumDecay,bassSubAmt,setBassSubAmt,fmIdx,setFmIdx,master,setMaster,swing,setSwing,humanize,setHumanize,grooveAmt,setGrooveAmt,grooveProfile,setGrooveProfile,regenerateSection,currentSectionName,undoLen,redoLen,undo,redo,recState,startRec,stopRec,recordings,exportJSON,importRef,importJSON,savedScenes,saveScene,loadScene,projectName,setProjectName,clearPattern,polySynth,setPolySynth,bassStack,setBassStack,bassPreset,synthPreset,drumPreset,performancePreset,bassPresetOptions,synthPresetOptions,drumPresetOptions,applyBassPreset,applySynthPreset,applyDrumPreset,applyPerformancePreset,previewForgedPreset,saveForgedPreset,laneVolume,setLaneVolume,laneProbability,setLaneProbability,synthChordChance,setSynthChordChance,synthHold,setSynthHold,synthCurve,setSynthCurve,compact,phone}){
   const [tab,setTab]=useState('mixer');
   const [noteEditLane,setNoteEditLane]=useState('bass');
+  const [forgeTarget,setForgeTarget]=useState('synth');
+  const [forgeName,setForgeName]=useState('');
+  const [forgeSpec,setForgeSpec]=useState({brightness:0.58,body:0.6,attack:0.46,width:0.56,motion:0.48,grit:0.24,air:0.52});
+  const setForgeValue=(key,val)=>setForgeSpec(prev=>({...prev,[key]:val}));
   const visibleStart=page*16,visibleEnd=Math.min(visibleStart+16,MAX_STEPS);
   const visIdx=Array.from({length:visibleEnd-visibleStart},(_,i)=>visibleStart+i);
   const mode=MODES[modeName]||MODES.minor;
@@ -3590,12 +3751,12 @@ function StudioView({genre,gc,patterns,bassLine,synthLine,laneLen,step,page,setP
       <div style={{width:compact?'100%':178,display:'flex',flexDirection:'column',gap:0,flexShrink:0,borderLeft:compact?'none':'1px solid rgba(255,255,255,0.05)',borderTop:compact?'1px solid rgba(255,255,255,0.05)':'none'}}>
         {/* Tabs */}
         <div style={{display:'flex',flexWrap:'wrap',gap:4,marginBottom:4,alignItems:'flex-end'}}>
-          <PresetSelect label='BASS' value={bassPreset} options={SOUND_PRESETS.bass} onChange={applyBassPreset} accent='#22d3ee' compact />
-          <PresetSelect label='SYNTH' value={synthPreset} options={SOUND_PRESETS.synth} onChange={applySynthPreset} accent={gc} compact />
-          <PresetSelect label='DRUM' value={drumPreset} options={SOUND_PRESETS.drum} onChange={applyDrumPreset} accent='#ffb347' compact />
+          <PresetSelect label='BASS' value={bassPreset} options={bassPresetOptions} onChange={applyBassPreset} accent='#22d3ee' compact />
+          <PresetSelect label='SYNTH' value={synthPreset} options={synthPresetOptions} onChange={applySynthPreset} accent={gc} compact />
+          <PresetSelect label='DRUM' value={drumPreset} options={drumPresetOptions} onChange={applyDrumPreset} accent='#ffb347' compact />
           <PresetSelect label='PERF' value={performancePreset} options={SOUND_PRESETS.performance} onChange={applyPerformancePreset} accent='#7ee787' compact />
           <button onClick={clearPattern} style={{padding:'4px 8px',borderRadius:3,border:'1px solid rgba(255,80,80,0.3)',background:'rgba(255,80,80,0.08)',color:'#ff8a8a',fontSize:7.75,cursor:'pointer',fontFamily:'Space Mono,monospace'}}>CLEAR</button><button onClick={()=>setPolySynth(v=>!v)} style={{padding:'4px 8px',borderRadius:3,border:`1px solid ${polySynth?gc:'rgba(255,255,255,0.08)'}`,background:polySynth?`${gc}18`:'rgba(255,255,255,0.03)',color:polySynth?gc:'rgba(255,255,255,0.95)',fontSize:7.75,cursor:'pointer',fontFamily:'Space Mono,monospace'}}>SYNTH POLY</button><button onClick={()=>setBassStack(v=>!v)} style={{padding:'4px 8px',borderRadius:3,border:'1px solid rgba(34,211,238,0.25)',background:bassStack?'rgba(34,211,238,0.12)':'rgba(255,255,255,0.03)',color:bassStack?'#22d3ee':'rgba(255,255,255,0.95)',fontSize:7.75,cursor:'pointer',fontFamily:'Space Mono,monospace'}}>BASS STACK</button></div><div style={{display:'flex',borderBottom:'1px solid rgba(255,255,255,0.05)',flexShrink:0}}>
-          {['mixer','synth','session'].map(t=>(
+          {['mixer','synth','forge','session'].map(t=>(
             <button key={t} onClick={()=>setTab(t)} style={{flex:1,padding:'5px 0',fontSize:7.25,fontWeight:700,letterSpacing:'0.1em',border:'none',background:'transparent',color:tab===t?gc:'rgba(255,255,255,0.9)',cursor:'pointer',borderBottom:tab===t?`2px solid ${gc}`:'2px solid transparent',textTransform:'uppercase',fontFamily:'Space Mono,monospace',transition:'color 0.1s'}}>{t}</button>
           ))}
         </div>
@@ -3697,6 +3858,38 @@ function StudioView({genre,gc,patterns,bassLine,synthLine,laneLen,step,page,setP
                 </select>
               </label>
             </div>
+          </>}
+
+
+
+          {tab==='forge'&&<>
+            <div style={{fontSize:6.75,color:'rgba(255,255,255,0.92)',letterSpacing:'0.1em',marginBottom:2,textTransform:'uppercase'}}>PRESET FORGE</div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:3,marginBottom:4}}>
+              {['bass','synth','drum'].map(kind=>(
+                <button key={kind} onClick={()=>setForgeTarget(kind)} style={{padding:'5px 4px',borderRadius:3,border:`1px solid ${forgeTarget===kind?gc:'rgba(255,255,255,0.08)'}`,
+                  background:forgeTarget===kind?`${gc}18`:'rgba(255,255,255,0.02)',color:forgeTarget===kind?gc:'rgba(255,255,255,0.94)',fontSize:7.25,cursor:'pointer',fontFamily:'Space Mono,monospace',textTransform:'uppercase'}}>{kind}</button>
+              ))}
+            </div>
+            <label style={{display:'flex',flexDirection:'column',gap:2,marginBottom:4}}>
+              <span style={{fontSize:6.75,color:'rgba(255,255,255,0.93)',letterSpacing:'0.12em',textTransform:'uppercase'}}>LABEL</span>
+              <input value={forgeName} onChange={e=>setForgeName(e.target.value)} placeholder='forge preset' style={{background:'rgba(255,255,255,0.04)',border:`1px solid ${gc}33`,color:'rgba(255,255,255,0.97)',borderRadius:4,padding:'5px 7px',fontSize:8,fontFamily:'Space Mono,monospace',outline:'none'}}/>
+            </label>
+            {[
+              ['BRIGHTNESS','brightness','#7dd3fc'],['BODY','body','#22d3ee'],['ATTACK','attack','#ffb347'],['WIDTH','width',gc],['MOTION','motion','#7ee787'],['GRIT','grit','#ff8844'],['AIR','air','#c084fc'],
+            ].map(([label,key,color])=>(
+              <div key={key}>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:0}}>
+                  <span style={{fontSize:6.75,letterSpacing:'0.08em',color:'rgba(255,255,255,0.94)',textTransform:'uppercase'}}>{label}</span>
+                  <span style={{fontSize:6.75,color, fontFamily:'Space Mono,monospace'}}>{Math.round(forgeSpec[key]*100)}</span>
+                </div>
+                <input type='range' min={0} max={1} step={0.01} value={forgeSpec[key]} onChange={e=>setForgeValue(key,Number(e.target.value))} style={{width:'100%',accentColor:color,color,height:12}}/>
+              </div>
+            ))}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:3,marginTop:4}}>
+              <button onClick={()=>previewForgedPreset(forgeTarget,{...forgeSpec,name:forgeName||`${forgeTarget} forge`})} style={{padding:'7px',borderRadius:3,border:`1px solid ${gc}44`,background:`${gc}0d`,color:gc,fontSize:8.25,cursor:'pointer',fontFamily:'Space Mono,monospace',letterSpacing:'0.1em',textTransform:'uppercase'}}>Preview</button>
+              <button onClick={()=>saveForgedPreset(forgeTarget,{...forgeSpec,name:forgeName||`${forgeTarget} forge`})} style={{padding:'7px',borderRadius:3,border:'1px solid rgba(255,255,255,0.12)',background:'rgba(255,255,255,0.03)',color:'rgba(255,255,255,0.96)',fontSize:8.25,cursor:'pointer',fontFamily:'Space Mono,monospace',letterSpacing:'0.1em',textTransform:'uppercase'}}>Save</button>
+            </div>
+            <div style={{marginTop:4,fontSize:7.25,color:'rgba(255,255,255,0.84)',lineHeight:1.55}}>Forge builds a lightweight custom preset from intent — brighter or darker, tighter or wider, calmer or dirtier — then applies or stores it without changing the app’s look.</div>
           </>}
 
           {tab==='session'&&<>

@@ -1,0 +1,29 @@
+CESIRA — Final major revision (Vercel ready)
+
+What was upgraded in this pass:
+- runtime parameters made more live-safe by moving key audio/playback values to refs used during scheduling and synthesis
+- stronger Perform actions:
+  - Mutate is more audible and reshapes velocity/probability too
+  - Thin and Thicken now act on the full arrangement more clearly
+  - Reharmonize avoids repeating the same progression when possible
+- note-transform actions are now poly-aware:
+  - random synth / random bass
+  - notes up / notes down
+  work on single notes and chord-like values more safely
+- added Preset Forge tab in Studio:
+  - target bass / synth / drum
+  - sliders for brightness, body, attack, width, motion, grit, air
+  - Preview to audition a forged preset
+  - Save to store a custom preset locally and reuse it from the normal preset dropdowns
+- custom preset bank persists in localStorage and is also included in session serialization
+- slightly increased some interface text sizes without redesigning the look
+- production build regenerated successfully for Vercel
+
+Important:
+- custom presets are stored per browser/domain via localStorage
+- if an old deployment is cached, do a hard refresh after deploy
+
+Build info:
+- Framework: Vite
+- Build command: npm run build
+- Output directory: dist
