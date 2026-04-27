@@ -403,6 +403,25 @@ const noteValueToDisplay=value=>{
   }
   return String(value);
 };
+const noteValueRoot=value=>{
+  if(Array.isArray(value)){
+    for(const entry of value){
+      const root=noteValueRoot(entry);
+      if(root)return root;
+    }
+    return '';
+  }
+  if(value===null||value===undefined)return '';
+  if(typeof value==='number')return String(value);
+  if(typeof value==='string')return value;
+  if(typeof value==='object'){
+    if(typeof value.root==='string')return value.root;
+    if(typeof value.note==='string')return value.note;
+    if(Array.isArray(value.notes))return noteValueRoot(value.notes);
+    if(typeof value.label==='string')return value.label.split('/')[0]||value.label;
+  }
+  return '';
+};
 
 const mkSteps=()=>Array.from({length:MAX_STEPS},()=>({on:false,p:1,v:1,l:1}));
 const mkNotes=(d='C2')=>Array.from({length:MAX_STEPS},()=>d);
