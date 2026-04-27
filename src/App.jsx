@@ -1696,6 +1696,9 @@ export default function App(){
   const [synthPreset,setSynthPreset]=useState('velvet_pad');
   const [drumPreset,setDrumPreset]=useState('tight_punch');
   const [performancePreset,setPerformancePreset]=useState('club_night');
+  const [customPresetBank,setCustomPresetBank]=useState(defaultCustomPresetBank());
+  const customPresetBankRef=useRef(defaultCustomPresetBank());
+  useEffect(()=>{customPresetBankRef.current=customPresetBank;},[customPresetBank]);
   const bassPresetCfg=getBassPresetCfg(bassPreset);
   const synthPresetCfg=getSynthPresetCfg(synthPreset);
   const drumPresetCfg=getDrumPresetCfg(drumPreset);
